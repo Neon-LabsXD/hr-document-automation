@@ -1,0 +1,11 @@
+export type AppPage =
+  | 'landing'
+  | 'dashboard'
+  | 'stats'
+  | 'settings'
+  | 'documents'
+  | 'candidates'
+  | 'offer'
+  | 'admin-agencies'
+  | 'admin-invite-codes'
+  | 'admin-feature-requests'
