@@ -50,6 +50,7 @@ export function scanPassport(file: File) {
 
   return apiRequest<PassportScanResponse>('/api/v1/ocr/scan-passport', {
     method: 'POST',
+    auth: true,
     body: formData,
   })
 }

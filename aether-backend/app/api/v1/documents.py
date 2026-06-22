@@ -15,8 +15,6 @@ from app.services.document_service import (
     generate_tenant_document,
 )
 
-DOCUSEAL_SUBMISSIONS_URL = "https://sign.aetherflow.pl/api/submissions"
-
 router = APIRouter()
 
 
@@ -122,7 +120,7 @@ async def send_document(
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                DOCUSEAL_SUBMISSIONS_URL,
+                f"{settings.DOCUSEAL_API_URL.rstrip('/')}/submissions",
                 headers={
                     "X-Auth-Token": settings.DOCUSEAL_API_KEY,
                     "Content-Type": "application/json",

@@ -63,14 +63,16 @@ async def register_tenant(payload: TenantRegistrationRequest):
     
     organization_id = org_res.data[0]["id"]
 
-    # 3. Регистрируем пользователя в Supabase Auth
-    # ВАЖНО: Мы зашиваем organization_id и role прямо в его метадату при создании!
+    # 3. Регистрируем пользователя в Supabase Auth.
+    # Данные авторизации храним в app_metadata и таблице profiles, а не в user-editable metadata.
     auth_res = supabase.auth.admin.create_user({
         "email": payload.email,
         "password": payload.password,
         "email_confirm": True, # Автоматически подтверждаем почту для MVP
         "user_metadata": {
             "full_name": payload.full_name,
+        },
+        "app_metadata": {
             "organization_id": organization_id,
             "role": "Administrator" # Первый пользователь всегда становится админом агентства
         }

@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+ngrok.exe
+aether-backend/app/generated_docs/
 
 # Editor directories and files
 .vscode/*

@@ -9,21 +9,27 @@ security = HTTPBearer()
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> CurrentUser:
     """
     Главный перехватчик (Middleware). Проверяет токен через Supabase и возвращает данные пользователя.
-    Если токен подделан, истек или не содержит organization_id — мгновенно блокирует запрос.
+    Tenant isolation берется только из серверной таблицы profiles, а не из user_metadata.
     """
     token = credentials.credentials
 
     try:
         user_res = supabase.auth.get_user(token)
-        user_metadata = user_res.user.user_metadata or {}
-
-        org_id = user_metadata.get("organization_id")
-        role = user_metadata.get("role")
+        profile_res = (
+            supabase.table("profiles")
+            .select("organization_id, role")
+            .eq("id", str(user_res.user.id))
+            .single()
+            .execute()
+        )
+        profile_data = profile_res.data or {}
+        org_id = profile_data.get("organization_id")
+        role = profile_data.get("role")
 
         if not org_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Доступ запрещен: Пользователь не привязан к организации"
+                detail="Доступ запрещен: пользователь не привязан к организации."
             )
 
         return CurrentUser(

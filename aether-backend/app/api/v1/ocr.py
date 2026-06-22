@@ -1,10 +1,12 @@
 import base64
 import json
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from openai import OpenAI, OpenAIError
 
+from app.api.deps import get_current_user
 from app.core.config import settings
+from app.schemas.auth import CurrentUser
 
 router = APIRouter()
 
@@ -36,7 +38,10 @@ def _get_image_mime_type(filename: str) -> str:
 
 
 @router.post("/scan-passport")
-async def scan_passport(file: UploadFile = File(...)):
+async def scan_passport(
+    file: UploadFile = File(...),
+    _current_user: CurrentUser = Depends(get_current_user),
+):
     filename = file.filename or ""
     image_mime_type = _get_image_mime_type(filename)
 
