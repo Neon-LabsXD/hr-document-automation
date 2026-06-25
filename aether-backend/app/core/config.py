@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
 
     # Конфигурация DocuSeal
-    DOCUSEAL_API_URL: str = "https://sign.aetherflow.com/api"
+    DOCUSEAL_API_URL: str = "https://api.docuseal.com"
     DOCUSEAL_API_KEY: str
-    DOCUSEAL_TEMPLATE_ID: int = 1
+    DOCUSEAL_USER_EMAIL: str = ""
 
     # Автоматическое чтение из файла .env в корне проекта
     model_config = SettingsConfigDict(

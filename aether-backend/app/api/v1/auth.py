@@ -1,10 +1,35 @@
+import json
+import time
+from pathlib import Path
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
 from app.schemas.auth import TenantRegistrationRequest
-from app.core.database import supabase
+from app.core.database import supabase, supabase_auth
 
 router = APIRouter()
+DEBUG_LOG_PATH = Path(__file__).resolve().parents[3] / ".." / "debug-b806ce.log"
+
+
+# region agent log
+def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        entry = {
+            "sessionId": "b806ce",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# endregion
 
 
 class LoginRequest(BaseModel):
@@ -15,18 +40,26 @@ class LoginRequest(BaseModel):
 @router.post("/login")
 async def login(payload: LoginRequest):
     try:
-        auth_res = supabase.auth.sign_in_with_password({
+        auth_res = supabase_auth.auth.sign_in_with_password({
             "email": payload.email,
             "password": payload.password,
         })
     except Exception as exc:
+        error_message = str(exc)
+
+        if "Invalid login credentials" in error_message or "invalid_credentials" in error_message:
+            detail = "Nieprawidłowy email lub hasło."
+        else:
+            detail = "Nie udało się zalogować. Spróbuj ponownie."
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Неверный email или пароль",
+            detail=detail,
         ) from exc
 
     return {
         "access_token": auth_res.session.access_token,
+        "refresh_token": auth_res.session.refresh_token,
         "token_type": "bearer",
         "user": {
             "id": str(auth_res.user.id),
@@ -65,7 +98,7 @@ async def register_tenant(payload: TenantRegistrationRequest):
 
     # 3. Регистрируем пользователя в Supabase Auth.
     # Данные авторизации храним в app_metadata и таблице profiles, а не в user-editable metadata.
-    auth_res = supabase.auth.admin.create_user({
+    create_user_payload = {
         "email": payload.email,
         "password": payload.password,
         "email_confirm": True, # Автоматически подтверждаем почту для MVP
@@ -76,7 +109,43 @@ async def register_tenant(payload: TenantRegistrationRequest):
             "organization_id": organization_id,
             "role": "Administrator" # Первый пользователь всегда становится админом агентства
         }
-    })
+    }
+
+    _debug_log(
+        "register-tenant",
+        "H1,H2,H3,H4",
+        "aether-backend/app/api/v1/auth.py:register_tenant",
+        "supabase create_user payload prepared",
+        {
+            "hasRootRole": "role" in create_user_payload,
+            "hasAppMetadataRole": create_user_payload.get("app_metadata", {}).get("role") == "Administrator",
+            "usesAdminCreateUser": True,
+        },
+    )
+
+    try:
+        auth_res = supabase.auth.admin.create_user(create_user_payload)
+    except Exception as exc:
+        try:
+            supabase.table("organizations").delete().eq("id", organization_id).execute()
+        except Exception:
+            pass
+
+        _debug_log(
+            "register-tenant",
+            "H1,H2,H3,H4",
+            "aether-backend/app/api/v1/auth.py:register_tenant",
+            "supabase create_user failed during tenant registration",
+            {
+                "emailDomain": payload.email.split("@")[-1] if "@" in payload.email else "invalid",
+                "exceptionType": type(exc).__name__,
+                "organizationCleanupAttempted": True,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Пользователь с таким email уже существует",
+        ) from exc
     
     user_id = auth_res.user.id
 

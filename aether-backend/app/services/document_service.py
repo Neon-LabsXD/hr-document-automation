@@ -1,14 +1,13 @@
-import subprocess
-from io import BytesIO
 from pathlib import Path
-from uuid import uuid4
-
-from docxtpl import DocxTemplate
 
 from app.core.database import supabase
 
 STORAGE_BUCKET = "agency-files"
 PDF_MEDIA_TYPE = "application/pdf"
+
+_DEPRECATED_GENERATION_MESSAGE = (
+    "Локальная генерация DOCX/PDF отключена. Используйте DocuSeal Template ID."
+)
 
 
 class DocumentGenerationError(Exception):
@@ -24,73 +23,107 @@ def _safe_docx_filename(filename: str) -> str:
     return safe_name
 
 
+def _generated_dir() -> Path:
+    generated_dir = Path(__file__).resolve().parents[1] / "generated_docs"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    return generated_dir
+
+
+def _template_path(organization_id: str, template_name: str) -> str:
+    return f"{organization_id}/templates/{_safe_docx_filename(template_name)}"
+
+
+def _list_template_filenames(organization_id: str) -> list[str]:
+    try:
+        storage_items = supabase.storage.from_(STORAGE_BUCKET).list(f"{organization_id}/templates")
+    except Exception as exc:
+        raise DocumentGenerationError(
+            f"Не удалось получить список шаблонов из Supabase Storage. Ошибка: {str(exc)}"
+        ) from exc
+
+    filenames = [
+        str(item.get("name"))
+        for item in storage_items or []
+        if item.get("name")
+        and not str(item.get("name")).startswith(".")
+        and str(item.get("name")).lower().endswith(".docx")
+    ]
+
+    return sorted(filenames, key=str.lower)
+
+
+def resolve_template_filename(organization_id: str, template_id: int | str | None) -> str:
+    filenames = _list_template_filenames(organization_id)
+
+    if not filenames:
+        raise DocumentGenerationError("У организации нет загруженных DOCX-шаблонов.")
+
+    template_id_value = str(template_id or "").strip()
+    if template_id_value:
+        exact_candidates = {
+            f"{template_id_value}.docx",
+            f"template_{template_id_value}.docx",
+            f"szablon_{template_id_value}.docx",
+        }
+        for filename in filenames:
+            if filename.lower() in {candidate.lower() for candidate in exact_candidates}:
+                return filename
+
+        if template_id_value.isdigit():
+            template_index = int(template_id_value) - 1
+            if 0 <= template_index < len(filenames):
+                return filenames[template_index]
+
+    if len(filenames) == 1:
+        return filenames[0]
+
+    raise DocumentGenerationError(
+        "Не удалось однозначно сопоставить template_id с загруженным DOCX-шаблоном."
+    )
+
+
+def download_template_content(organization_id: str, template_name: str) -> bytes:
+    template_path = _template_path(organization_id, template_name)
+
+    try:
+        return supabase.storage.from_(STORAGE_BUCKET).download(template_path)
+    except Exception as exc:
+        raise DocumentGenerationError(
+            f"Не удалось скачать шаблон из Supabase Storage. Ошибка: {str(exc)}"
+        ) from exc
+
+
+def render_template_to_docx(
+    template_content: bytes,
+    template_name: str,
+    context: dict,
+) -> Path:
+    raise DocumentGenerationError(_DEPRECATED_GENERATION_MESSAGE)
+
+
+def convert_docx_to_pdf(docx_path: Path) -> Path:
+    raise DocumentGenerationError(_DEPRECATED_GENERATION_MESSAGE)
+
+
+def get_generated_docs_dir() -> Path:
+    return _generated_dir()
+
+
+def convert_agency_template_to_pdf(organization_id: str, template_name: str) -> tuple[Path, Path]:
+    raise DocumentGenerationError(_DEPRECATED_GENERATION_MESSAGE)
+
+
+def generate_tenant_document_files(
+    organization_id: str,
+    template_name: str,
+    context: dict,
+) -> tuple[Path, Path]:
+    raise DocumentGenerationError(_DEPRECATED_GENERATION_MESSAGE)
+
+
 def generate_tenant_document(
     organization_id: str,
     template_name: str,
     context: dict,
 ) -> str:
-    """
-    Генерирует PDF-документ из DOCX-шаблона организации и возвращает абсолютный путь к файлу.
-    """
-    safe_template_name = _safe_docx_filename(template_name)
-    template_path = f"{organization_id}/templates/{safe_template_name}"
-
-    try:
-        template_content = supabase.storage.from_(STORAGE_BUCKET).download(template_path)
-    except Exception as exc:
-        # Добавляем реальный текст ошибки, чтобы сразу увидеть её в Swagger
-        raise DocumentGenerationError(
-            f"Не удалось скачать шаблон из Supabase Storage. Ошибка: {str(exc)}"
-        ) from exc
-
-    try:
-        doc = DocxTemplate(BytesIO(template_content))
-        doc.render(context)
-
-        generated_dir = Path(__file__).resolve().parents[1] / "generated_docs"
-        generated_dir.mkdir(parents=True, exist_ok=True)
-
-        output_path = generated_dir / f"{Path(safe_template_name).stem}_{uuid4().hex}.docx"
-        doc.save(output_path)
-    except Exception as exc:
-        # Раскрываем внутреннюю ошибку docxtpl или файловой системы
-        raise DocumentGenerationError(
-            f"Не удалось сгенерировать документ. Ошибка: {str(exc)}"
-        ) from exc
-
-    try:
-        pdf_output_path = output_path.with_suffix(".pdf")
-        libreoffice_path = Path("C:/Program Files/LibreOffice/program/soffice.exe")
-        soffice_path = str(libreoffice_path) if libreoffice_path.exists() else "soffice"
-
-        cmd = [
-            soffice_path,
-            "--headless",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(generated_dir),
-            str(output_path),
-        ]
-        subprocess.run(cmd, check=True)
-
-        if not pdf_output_path.exists():
-            raise DocumentGenerationError(
-                f"LibreOffice завершил работу, но PDF-файл не был создан: {pdf_output_path}"
-            )
-    except FileNotFoundError as exc:
-        raise DocumentGenerationError(
-            "LibreOffice не найден. Установите LibreOffice или добавьте команду soffice в PATH."
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        raise DocumentGenerationError(
-            f"LibreOffice не смог конвертировать документ в PDF. Ошибка: {str(exc)}"
-        ) from exc
-    except DocumentGenerationError:
-        raise
-    except Exception as exc:
-        raise DocumentGenerationError(
-            f"Не удалось конвертировать документ в PDF. Ошибка: {str(exc)}"
-        ) from exc
-
-    return str(pdf_output_path.resolve())
+    raise DocumentGenerationError(_DEPRECATED_GENERATION_MESSAGE)

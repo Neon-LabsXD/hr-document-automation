@@ -16,10 +16,10 @@ async def send_contract_from_template(
     """
     Создает заявку на подпись в DocuSeal из заранее настроенного шаблона.
     """
-    selected_template_id = template_id or settings.DOCUSEAL_TEMPLATE_ID
+    if not template_id:
+        raise SignatureServiceError("template_id обязателен для отправки договора в DocuSeal.")
 
-    if not selected_template_id:
-        raise SignatureServiceError("template_id не передан и DOCUSEAL_TEMPLATE_ID не настроен в .env.")
+    selected_template_id = template_id
 
     api_url = settings.DOCUSEAL_API_URL.rstrip("/")
     payload = {

@@ -2,23 +2,30 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 
-from app.api.v1 import auth, documents, ocr, templates, webhooks
+from app.api.v1 import auth, candidates, documents, ocr, organizations, templates, webhooks
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.schemas.auth import CurrentUser
 
-origins = list(dict.fromkeys([
+LOCAL_DEV_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    *settings.ALLOWED_ORIGINS,
-]))
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+origins = list(
+    dict.fromkeys(
+        origin.rstrip("/")
+        for origin in [*LOCAL_DEV_ORIGINS, *settings.ALLOWED_ORIGINS]
+        if origin and origin != "*"
+    )
+)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
 )
 
-# Настройка CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -28,6 +35,8 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Авторизация"])
+app.include_router(organizations.router, prefix="/api/v1/organization", tags=["Организация"])
+app.include_router(candidates.router, prefix="/api/v1/candidates", tags=["Кандидаты"])
 app.include_router(templates.router, prefix="/api/v1/templates", tags=["Шаблоны документов"])
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["Генерация документов"])
 app.include_router(ocr.router, prefix="/api/v1/ocr", tags=["ИИ Распознавание (OCR)"])
