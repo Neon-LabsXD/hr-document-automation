@@ -6,7 +6,6 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr
 
 from app.api.deps import get_current_user
-from app.core.config import settings
 from app.core.database import supabase
 from app.schemas.auth import CurrentUser
 from app.services.document_service import (
@@ -14,6 +13,7 @@ from app.services.document_service import (
     PDF_MEDIA_TYPE,
     generate_tenant_document,
 )
+from app.services.docuseal import docuseal_api_url, docuseal_auth_headers
 
 router = APIRouter()
 
@@ -120,11 +120,8 @@ async def send_document(
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{settings.DOCUSEAL_API_URL.rstrip('/')}/submissions",
-                headers={
-                    "X-Auth-Token": settings.DOCUSEAL_API_KEY,
-                    "Content-Type": "application/json",
-                },
+                docuseal_api_url("submissions"),
+                headers=docuseal_auth_headers(),
                 json=docuseal_payload,
             )
 

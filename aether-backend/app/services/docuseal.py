@@ -8,15 +8,36 @@ from fastapi import HTTPException, status
 from app.core.config import settings
 
 
+def get_docuseal_api_key() -> str:
+    api_key = settings.DOCUSEAL_API_KEY.strip()
+
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="DOCUSEAL_API_KEY nie jest skonfigurowany w pliku .env.",
+        )
+
+    return api_key
+
+
 def docuseal_auth_headers(*, json_request: bool = True) -> dict[str, str]:
-    headers = {"X-Auth-Token": settings.DOCUSEAL_API_KEY.strip()}
+    headers = {
+        "X-Auth-Token": get_docuseal_api_key(),
+    }
+
     if json_request:
         headers["Content-Type"] = "application/json"
+
     return headers
 
 
 def docuseal_api_url(path: str) -> str:
     return f"{settings.DOCUSEAL_API_URL.strip().rstrip('/')}/{path.lstrip('/')}"
+
+
+def docuseal_web_base_url() -> str:
+    host = docuseal_builder_host()
+    return f"https://{host}" if host else settings.DOCUSEAL_API_URL.strip().rstrip("/").removesuffix("/api")
 
 
 def docuseal_builder_host() -> str | None:
@@ -60,7 +81,7 @@ def create_builder_token(
 
     token = jwt.encode(
         payload,
-        settings.DOCUSEAL_API_KEY.strip(),
+        get_docuseal_api_key(),
         algorithm="HS256",
     )
 
@@ -78,7 +99,7 @@ def parse_docuseal_template_response(data: Any) -> dict[str, Any]:
     edit_url = data.get("edit_url")
 
     if not edit_url and data.get("slug"):
-        edit_url = f"https://docuseal.com/templates/{data['slug']}/edit"
+        edit_url = f"{docuseal_web_base_url()}/templates/{data['slug']}/edit"
 
     return {
         "id": template_id,
@@ -110,9 +131,13 @@ async def create_docuseal_template_from_pdf(
     print(f"DEBUG: Creating DocuSeal template at {request_url}")
 
     async with httpx.AsyncClient(timeout=120.0) as client:
+        headers = {
+            "X-Auth-Token": get_docuseal_api_key(),
+            "Content-Type": "application/json",
+        }
         response = await client.post(
             request_url,
-            headers=docuseal_auth_headers(),
+            headers=headers,
             json=payload,
         )
 

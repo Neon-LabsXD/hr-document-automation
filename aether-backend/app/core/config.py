@@ -1,6 +1,11 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import EmailStr
+from pathlib import Path
 from typing import List
+
+from pydantic import EmailStr, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Aether Flow Бэкенд"
@@ -26,15 +31,27 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
 
     # Конфигурация DocuSeal
-    DOCUSEAL_API_URL: str = "https://api.docuseal.com"
-    DOCUSEAL_API_KEY: str
+    DOCUSEAL_API_URL: str = "https://docuseal.eu/api"
+    DOCUSEAL_API_KEY: str = ""
     DOCUSEAL_USER_EMAIL: str = ""
 
-    # Автоматическое чтение из файла .env в корне проекта
+    @field_validator(
+        "DOCUSEAL_API_KEY",
+        "DOCUSEAL_API_URL",
+        "DOCUSEAL_USER_EMAIL",
+        mode="before",
+    )
+    @classmethod
+    def strip_wrapping_quotes(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().strip('"').strip("'")
+        return value
+
+    # Автоматическое чтение из .env в корне aether-backend
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(BACKEND_ROOT / ".env"),
         env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
     )
 
 settings = Settings()

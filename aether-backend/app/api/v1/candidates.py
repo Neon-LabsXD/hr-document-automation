@@ -10,10 +10,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
 from app.api.deps import get_current_user
-from app.api.v1.templates import list_organization_templates, template_display_name
-from app.core.config import settings
+from app.api.v1.templates import (
+    list_organization_templates,
+    resolve_docuseal_template_id,
+    template_display_name,
+)
 from app.core.database import supabase
 from app.schemas.auth import CurrentUser
+from app.services.docuseal import docuseal_api_url, docuseal_auth_headers
 
 router = APIRouter()
 DEBUG_LOG_PATH = Path(__file__).resolve().parents[3] / ".." / "debug-b806ce.log"
@@ -77,11 +81,11 @@ def _candidate_form_url(slug: str) -> str:
     return f"/f/{slug}"
 
 
-def _load_agency_profile(organization_id: str) -> dict[str, Any]:
+def _load_agency_profile(organization_id: str, template_id: int | None = None) -> dict[str, Any]:
     try:
         organization_res = (
             supabase.table("organizations")
-            .select("name, nip, address, phone, docuseal_template_id")
+            .select("name, nip, address, phone")
             .eq("id", organization_id)
             .is_("deleted_at", "null")
             .single()
@@ -100,16 +104,9 @@ def _load_agency_profile(organization_id: str) -> dict[str, Any]:
         )
 
     organization = organization_res.data
-    docuseal_template_id = organization.get("docuseal_template_id")
-
-    if docuseal_template_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="У агентства не настроен шаблон DocuSeal. Загрузите PDF в ustawieniach agencji.",
-        )
 
     return {
-        "docuseal_template_id": int(docuseal_template_id),
+        "docuseal_template_id": resolve_docuseal_template_id(organization_id, template_id),
         "company_name": organization.get("name") or "",
         "nip": organization.get("nip") or "",
         "address": organization.get("address") or "",
@@ -150,14 +147,10 @@ async def _create_docuseal_pdf_submission(
         ],
     }
 
-    api_key = settings.DOCUSEAL_API_KEY.strip()
-    headers = {
-        "X-Auth-Token": api_key,
-        "Content-Type": "application/json",
-    }
-    request_url = f"{settings.DOCUSEAL_API_URL.strip().rstrip('/')}/submissions"
+    headers = docuseal_auth_headers()
+    request_url = docuseal_api_url("submissions")
 
-    print(f"DEBUG: Sending request to {request_url} with token length {len(api_key)}")
+    print(f"DEBUG: Sending request to {request_url} with X-Auth-Token header")
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
@@ -371,7 +364,7 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
     document = document_res.data[0]
 
     organization_id = str(candidate["organization_id"])
-    agency_profile = _load_agency_profile(organization_id)
+    agency_profile = _load_agency_profile(organization_id, candidate.get("template_id"))
 
     try:
         docuseal_id = await _create_docuseal_pdf_submission(payload, agency_profile)

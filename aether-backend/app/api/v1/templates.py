@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -15,11 +17,19 @@ from app.services.docuseal import (
 
 router = APIRouter()
 STORAGE_BUCKET = "agency-files"
+MAX_ORGANIZATION_TEMPLATES = 10
+REGISTRY_FILENAME = "_templates_registry.json"
+REGISTRY_META_KEY = "__meta__"
+DEFAULT_TEMPLATE_FILENAME_KEY = "default_template_filename"
 
 
 class BuilderTokenRequest(BaseModel):
     docuseal_template_id: int
     template_name: str | None = None
+
+
+class SetDefaultTemplateRequest(BaseModel):
+    template_id: int
 
 
 def _safe_pdf_filename(filename: str) -> str:
@@ -42,6 +52,10 @@ def _template_storage_path(organization_id: str, filename: str) -> str:
     return f"{_templates_prefix(organization_id)}/{_safe_pdf_filename(filename)}"
 
 
+def _registry_storage_path(organization_id: str) -> str:
+    return f"{_templates_prefix(organization_id)}/{REGISTRY_FILENAME}"
+
+
 def template_display_name(filename: str) -> str:
     name = (filename or "").strip()
 
@@ -56,6 +70,7 @@ def _serialize_template_item(
     organization_id: str,
     template_id: int,
     docuseal_template_id: int | None = None,
+    is_default_send: bool = False,
 ) -> dict[str, Any] | None:
     filename = item.get("name")
 
@@ -76,6 +91,7 @@ def _serialize_template_item(
         "size": size,
         "updated_at": item.get("updated_at") or item.get("created_at"),
         "docuseal_template_id": docuseal_template_id,
+        "is_default_send": is_default_send,
     }
 
 
@@ -106,6 +122,153 @@ def _get_organization_docuseal_template_id(organization_id: str) -> int | None:
         return None
 
 
+def _load_raw_registry(organization_id: str) -> dict[str, Any]:
+    try:
+        raw = supabase.storage.from_(STORAGE_BUCKET).download(_registry_storage_path(organization_id))
+        data = json.loads(raw.decode("utf-8"))
+
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    return {}
+
+
+def _load_template_registry(organization_id: str) -> dict[str, dict[str, Any]]:
+    raw_registry = _load_raw_registry(organization_id)
+
+    return {
+        str(filename): entry
+        for filename, entry in raw_registry.items()
+        if filename != REGISTRY_META_KEY and isinstance(entry, dict)
+    }
+
+
+def _load_registry_meta(organization_id: str) -> dict[str, Any]:
+    raw_registry = _load_raw_registry(organization_id)
+    meta = raw_registry.get(REGISTRY_META_KEY)
+
+    return meta if isinstance(meta, dict) else {}
+
+
+def _save_template_registry(
+    organization_id: str,
+    registry: dict[str, dict[str, Any]],
+    meta: dict[str, Any] | None = None,
+) -> None:
+    payload: dict[str, Any] = {**registry}
+
+    if meta is not None:
+        payload[REGISTRY_META_KEY] = meta
+    else:
+        existing_meta = _load_registry_meta(organization_id)
+        if existing_meta:
+            payload[REGISTRY_META_KEY] = existing_meta
+
+    content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    try:
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            _registry_storage_path(organization_id),
+            content,
+            {"content-type": "application/json", "upsert": "true"},
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось сохранить реестр шаблонов. Ошибка: {str(exc)}",
+        ) from exc
+
+
+def _get_default_template_filename(organization_id: str) -> str | None:
+    meta = _load_registry_meta(organization_id)
+    filename = meta.get(DEFAULT_TEMPLATE_FILENAME_KEY)
+
+    if not filename:
+        return None
+
+    return str(filename)
+
+
+def _set_default_template_filename(organization_id: str, filename: str) -> None:
+    file_entries = _load_template_registry(organization_id)
+    meta = _load_registry_meta(organization_id)
+    meta[DEFAULT_TEMPLATE_FILENAME_KEY] = filename
+    _save_template_registry(organization_id, file_entries, meta)
+
+
+def _resolve_default_template_id(
+    templates: list[dict[str, Any]],
+    organization_id: str,
+) -> int | None:
+    default_filename = _get_default_template_filename(organization_id)
+
+    if default_filename:
+        for template in templates:
+            if template.get("filename") == default_filename:
+                return int(template["id"])
+
+    if templates:
+        return int(templates[0]["id"])
+
+    return None
+
+
+def _annotate_templates_with_default(
+    templates: list[dict[str, Any]],
+    default_template_id: int | None,
+) -> list[dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+
+    for template in templates:
+        annotated.append({
+            **template,
+            "is_default_send": default_template_id is not None and template["id"] == default_template_id,
+        })
+
+    return annotated
+
+
+def _registry_docuseal_template_id(registry_entry: dict[str, Any] | None) -> int | None:
+    if not registry_entry:
+        return None
+
+    value = registry_entry.get("docuseal_template_id")
+
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _list_storage_pdf_items(organization_id: str) -> list[dict[str, Any]]:
+    prefix = _templates_prefix(organization_id)
+
+    try:
+        storage_items = supabase.storage.from_(STORAGE_BUCKET).list(prefix)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Не удалось получить список шаблонов. Ошибка: {str(exc)}",
+        ) from exc
+
+    return sorted(
+        [
+            item
+            for item in storage_items or []
+            if item.get("name")
+            and not str(item.get("name")).startswith(".")
+            and str(item.get("name")).lower().endswith(".pdf")
+            and str(item.get("name")) != REGISTRY_FILENAME
+        ],
+        key=lambda item: str(item.get("name")).lower(),
+    )
+
+
 def _latest_template_filename(items: list[dict[str, Any]]) -> str | None:
     if not items:
         return None
@@ -119,31 +282,68 @@ def _latest_template_filename(items: list[dict[str, Any]]) -> str | None:
     return str(filename) if filename else None
 
 
+def _resolve_docuseal_template_id_for_file(
+    filename: str,
+    registry: dict[str, dict[str, Any]],
+    legacy_org_docuseal_id: int | None,
+    linked_filename: str | None,
+) -> int | None:
+    registry_id = _registry_docuseal_template_id(registry.get(filename))
+    if registry_id is not None:
+        return registry_id
+
+    if legacy_org_docuseal_id and linked_filename == filename:
+        return legacy_org_docuseal_id
+
+    return None
+
+
+def _maybe_backfill_registry_from_legacy(
+    organization_id: str,
+    registry: dict[str, dict[str, Any]],
+    legacy_org_docuseal_id: int | None,
+    linked_filename: str | None,
+) -> dict[str, dict[str, Any]]:
+    if not legacy_org_docuseal_id or not linked_filename or linked_filename in registry:
+        return registry
+
+    updated_registry = {
+        **registry,
+        linked_filename: {
+            "docuseal_template_id": legacy_org_docuseal_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    meta = _load_registry_meta(organization_id)
+    if not meta.get(DEFAULT_TEMPLATE_FILENAME_KEY):
+        meta[DEFAULT_TEMPLATE_FILENAME_KEY] = linked_filename
+    _save_template_registry(organization_id, updated_registry, meta)
+    return updated_registry
+
+
 def list_organization_templates(organization_id: str) -> list[dict[str, Any]]:
-    prefix = _templates_prefix(organization_id)
-    docuseal_template_id = _get_organization_docuseal_template_id(organization_id)
-
-    try:
-        storage_items = supabase.storage.from_(STORAGE_BUCKET).list(prefix)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось получить список шаблонов. Ошибка: {str(exc)}",
-        ) from exc
-
-    visible_items = sorted(
-        [
-            item
-            for item in storage_items or []
-            if item.get("name")
-            and not str(item.get("name")).startswith(".")
-            and str(item.get("name")).lower().endswith(".pdf")
-        ],
-        key=lambda item: str(item.get("name")).lower(),
-    )
+    visible_items = _list_storage_pdf_items(organization_id)
+    legacy_org_docuseal_id = _get_organization_docuseal_template_id(organization_id)
     linked_filename = _latest_template_filename(visible_items)
+    registry = _load_template_registry(organization_id)
+    registry = _maybe_backfill_registry_from_legacy(
+        organization_id,
+        registry,
+        legacy_org_docuseal_id,
+        linked_filename,
+    )
+    default_template_id = _resolve_default_template_id(
+        [
+            {
+                "id": index,
+                "filename": str(item.get("name")),
+            }
+            for index, item in enumerate(visible_items, start=1)
+        ],
+        organization_id,
+    )
 
-    return [
+    templates = [
         serialized
         for index, item in enumerate(visible_items, start=1)
         if (
@@ -151,13 +351,49 @@ def list_organization_templates(organization_id: str) -> list[dict[str, Any]]:
                 item,
                 organization_id,
                 index,
-                docuseal_template_id
-                if docuseal_template_id and linked_filename and item.get("name") == linked_filename
-                else None,
+                _resolve_docuseal_template_id_for_file(
+                    str(item.get("name")),
+                    registry,
+                    legacy_org_docuseal_id,
+                    linked_filename,
+                ),
+                is_default_send=default_template_id is not None and index == default_template_id,
             )
         )
         is not None
     ]
+
+    return _annotate_templates_with_default(templates, default_template_id)
+
+
+def get_default_send_template_id(organization_id: str) -> int | None:
+    templates = list_organization_templates(organization_id)
+    return _resolve_default_template_id(templates, organization_id)
+
+
+def resolve_docuseal_template_id(organization_id: str, template_id: int | None) -> int:
+    templates = list_organization_templates(organization_id)
+
+    if template_id is not None:
+        for template in templates:
+            if template["id"] == template_id and template.get("docuseal_template_id"):
+                return int(template["docuseal_template_id"])
+
+    default_template_id = get_default_send_template_id(organization_id)
+
+    if default_template_id is not None:
+        for template in templates:
+            if template["id"] == default_template_id and template.get("docuseal_template_id"):
+                return int(template["docuseal_template_id"])
+
+    for template in templates:
+        if template.get("docuseal_template_id"):
+            return int(template["docuseal_template_id"])
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="У агентства не настроен шаблон DocuSeal. Загрузите PDF в ustawieniach agencji.",
+    )
 
 
 def _save_organization_docuseal_template_id(organization_id: str, docuseal_template_id: int) -> None:
@@ -172,15 +408,89 @@ def _save_organization_docuseal_template_id(organization_id: str, docuseal_templ
         ) from exc
 
 
+def _upsert_template_registry_entry(
+    organization_id: str,
+    filename: str,
+    docuseal_template_id: int,
+) -> None:
+    file_entries = _load_template_registry(organization_id)
+    meta = _load_registry_meta(organization_id)
+    file_entries[filename] = {
+        "docuseal_template_id": docuseal_template_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if not meta.get(DEFAULT_TEMPLATE_FILENAME_KEY):
+        meta[DEFAULT_TEMPLATE_FILENAME_KEY] = filename
+
+    _save_template_registry(organization_id, file_entries, meta)
+
+
+def _remove_template_registry_entry(organization_id: str, filename: str) -> None:
+    file_entries = _load_template_registry(organization_id)
+    meta = _load_registry_meta(organization_id)
+
+    if filename not in file_entries:
+        return
+
+    file_entries.pop(filename, None)
+
+    if meta.get(DEFAULT_TEMPLATE_FILENAME_KEY) == filename:
+        remaining_filenames = sorted(file_entries.keys())
+        if remaining_filenames:
+            meta[DEFAULT_TEMPLATE_FILENAME_KEY] = remaining_filenames[0]
+        else:
+            meta.pop(DEFAULT_TEMPLATE_FILENAME_KEY, None)
+
+    _save_template_registry(organization_id, file_entries, meta)
+
+
 @router.get("")
 @router.get("/list")
 async def list_templates(current_user: CurrentUser = Depends(get_current_user)):
     """
     Возвращает PDF-шаблоны, загруженные текущей организацией.
     """
-    templates = list_organization_templates(str(current_user.organization_id))
+    organization_id = str(current_user.organization_id)
+    templates = list_organization_templates(organization_id)
+    default_template_id = get_default_send_template_id(organization_id)
 
-    return {"templates": templates}
+    return {
+        "templates": templates,
+        "max_templates": MAX_ORGANIZATION_TEMPLATES,
+        "default_template_id": default_template_id,
+    }
+
+
+@router.patch("/default")
+async def set_default_template(
+    payload: SetDefaultTemplateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Устанавливает шаблон по умолчанию для отправки кандидатам.
+    """
+    organization_id = str(current_user.organization_id)
+    templates = list_organization_templates(organization_id)
+    selected_template = next(
+        (template for template in templates if template["id"] == payload.template_id),
+        None,
+    )
+
+    if not selected_template:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wybrany szablon nie został znaleziony.",
+        )
+
+    _set_default_template_filename(organization_id, str(selected_template["filename"]))
+    updated_templates = list_organization_templates(organization_id)
+
+    return {
+        "status": "success",
+        "default_template_id": payload.template_id,
+        "templates": updated_templates,
+    }
 
 
 @router.post("/builder-token")
@@ -209,7 +519,9 @@ async def delete_template(filename: str, current_user: CurrentUser = Depends(get
     """
     Удаляет PDF-шаблон организации из Supabase Storage.
     """
-    storage_path = _template_storage_path(str(current_user.organization_id), filename)
+    organization_id = str(current_user.organization_id)
+    safe_filename = _safe_pdf_filename(filename)
+    storage_path = _template_storage_path(organization_id, safe_filename)
 
     try:
         supabase.storage.from_(STORAGE_BUCKET).remove([storage_path])
@@ -219,7 +531,9 @@ async def delete_template(filename: str, current_user: CurrentUser = Depends(get
             detail=f"Не удалось удалить шаблон. Ошибка: {str(exc)}",
         ) from exc
 
-    return {"status": "success", "filename": _safe_pdf_filename(filename)}
+    _remove_template_registry_entry(organization_id, safe_filename)
+
+    return {"status": "success", "filename": safe_filename}
 
 
 @router.post("/upload")
@@ -228,7 +542,7 @@ async def upload_template(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """
-    Загружает PDF в DocuSeal как шаблон и сохраняет docuseal_template_id организации.
+    Загружает PDF в DocuSeal как шаблон и сохраняет связь с файлом в реестре организации.
     """
     organization_id = str(current_user.organization_id)
     original_filename = file.filename or ""
@@ -239,6 +553,16 @@ async def upload_template(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Загруженный файл пуст.",
+        )
+
+    existing_items = _list_storage_pdf_items(organization_id)
+    existing_filenames = {str(item.get("name")) for item in existing_items}
+    is_replacement = filename in existing_filenames
+
+    if not is_replacement and len(existing_items) >= MAX_ORGANIZATION_TEMPLATES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Można przechowywać maksymalnie {MAX_ORGANIZATION_TEMPLATES} szablonów PDF. Usuń istniejący szablon, aby dodać nowy.",
         )
 
     try:
@@ -267,6 +591,7 @@ async def upload_template(
     builder_host = docuseal_builder_host()
 
     _save_organization_docuseal_template_id(organization_id, docuseal_template_id)
+    _upsert_template_registry_entry(organization_id, filename, docuseal_template_id)
 
     storage_path = _template_storage_path(organization_id, filename)
 
@@ -274,7 +599,10 @@ async def upload_template(
         supabase.storage.from_(STORAGE_BUCKET).upload(
             storage_path,
             file_content,
-            {"content-type": file.content_type or "application/pdf"},
+            {
+                "content-type": file.content_type or "application/pdf",
+                "upsert": "true",
+            },
         )
     except Exception as exc:
         raise HTTPException(

@@ -1,6 +1,6 @@
 import httpx
 
-from app.core.config import settings
+from app.services.docuseal import docuseal_api_url, docuseal_auth_headers
 
 
 class SignatureServiceError(Exception):
@@ -19,12 +19,9 @@ async def send_contract_from_template(
     if not template_id:
         raise SignatureServiceError("template_id обязателен для отправки договора в DocuSeal.")
 
-    selected_template_id = template_id
-
-    api_url = settings.DOCUSEAL_API_URL.rstrip("/")
     payload = {
         "name": f"Контракт для {employee_name}",
-        "template_id": selected_template_id,
+        "template_id": template_id,
         "send_email": True,
         "submitters": [
             {
@@ -39,11 +36,8 @@ async def send_contract_from_template(
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{api_url}/submissions",
-                headers={
-                    "X-Auth-Token": settings.DOCUSEAL_API_KEY,
-                    "Content-Type": "application/json",
-                },
+                docuseal_api_url("submissions"),
+                headers=docuseal_auth_headers(),
                 json=payload,
             )
             response.raise_for_status()
