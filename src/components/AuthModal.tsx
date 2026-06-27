@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { LockKeyhole, X } from 'lucide-react'
 import { useAppContext, type UserRole } from '../context/AppContext'
+import { RegulaminContent } from './RegulaminContent'
 
 interface AuthModalProps {
   isOpen: boolean
@@ -22,6 +23,8 @@ export function AuthModal({ isOpen, onClose, onAuthenticated }: AuthModalProps) 
   const [registerEmail, setRegisterEmail] = useState('')
   const [registerPassword, setRegisterPassword] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  const [acceptedTerms, setAcceptedTerms] = useState(false)
+  const [showTerms, setShowTerms] = useState(false)
 
   if (!isOpen) {
     return null
@@ -48,6 +51,12 @@ export function AuthModal({ isOpen, onClose, onAuthenticated }: AuthModalProps) 
   const handleRegister = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError('')
+
+    if (!acceptedTerms) {
+      setError('Aby założyć konto, musisz zaakceptować Regulamin platformy.')
+      return
+    }
+
     setIsSubmitting(true)
 
     const result = await registerAgency(agencyName, fullName, registerEmail, registerPassword, inviteCode)
@@ -187,14 +196,52 @@ export function AuthModal({ isOpen, onClose, onAuthenticated }: AuthModalProps) 
                 type="text"
                 value={inviteCode}
                 onChange={(event) => setInviteCode(event.target.value)}
-                placeholder="AETHER2026"
+                placeholder="Wpisz kod zaproszenia"
               />
             </label>
+            <label className="auth-consent">
+              <input
+                type="checkbox"
+                checked={acceptedTerms}
+                onChange={(event) => setAcceptedTerms(event.target.checked)}
+              />
+              <span>
+                Oświadczam, że zawieram umowę jako przedsiębiorca (B2B) oraz akceptuję{' '}
+                <button type="button" className="auth-consent-link" onClick={() => setShowTerms(true)}>
+                  Regulamin platformy
+                </button>
+                .
+              </span>
+            </label>
             {error && <p className="auth-error">{error}</p>}
-            <button type="submit" disabled={isSubmitting}>
+            <button type="submit" disabled={isSubmitting || !acceptedTerms}>
               {isSubmitting ? 'Rejestracja...' : 'Zarejestruj agencję'}
             </button>
           </form>
+        )}
+
+        {showTerms && (
+          <div className="auth-terms-overlay" role="dialog" aria-modal="true" aria-label="Regulamin platformy">
+            <div className="auth-terms-bar">
+              <strong>Regulamin platformy</strong>
+              <button type="button" aria-label="Zamknij regulamin" onClick={() => setShowTerms(false)}>
+                <X />
+              </button>
+            </div>
+            <div className="auth-terms-scroll">
+              <RegulaminContent />
+            </div>
+            <button
+              type="button"
+              className="auth-terms-accept"
+              onClick={() => {
+                setAcceptedTerms(true)
+                setShowTerms(false)
+              }}
+            >
+              Akceptuję Regulamin
+            </button>
+          </div>
         )}
       </section>
     </div>

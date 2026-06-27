@@ -1,16 +1,24 @@
 import base64
+import io
 import json
+import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from openai import OpenAI, OpenAIError
+from PIL import Image, UnidentifiedImageError
 
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.schemas.auth import CurrentUser
 
+logger = logging.getLogger("app.ocr")
+
 router = APIRouter()
 
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG"}
+MAX_PASSPORT_FILE_BYTES = 8 * 1024 * 1024  # 8 MB
+
 OCR_SYSTEM_PROMPT = (
     "Ты — специализированный HR-модуль OCR для польского рынка. Твоя задача — извлечь "
     "персональные данные из фотографии паспорта или Карты Побыту (Karta Pobytu). Вытащи "
@@ -37,6 +45,29 @@ def _get_image_mime_type(filename: str) -> str:
     return "image/png" if extension == ".png" else "image/jpeg"
 
 
+def _validate_image_content(image_bytes: bytes) -> None:
+    """
+    Проверяем, что присланные байты — действительно изображение в одном из
+    разрешённых форматов. Без этой проверки клиент мог бы прислать любой
+    бинарный мусор с расширением .png и улететь в OpenAI на наши деньги.
+    """
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.verify()
+            detected_format = (image.format or "").upper()
+    except (UnidentifiedImageError, Exception) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Файл не является валидным изображением.",
+        ) from exc
+
+    if detected_format not in ALLOWED_IMAGE_FORMATS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Разрешены только JPEG и PNG.",
+        )
+
+
 @router.post("/scan-passport")
 async def scan_passport(
     file: UploadFile = File(...),
@@ -51,8 +82,24 @@ async def scan_passport(
             detail="OPENAI_API_KEY не настроен на сервере.",
         )
 
+    # Читаем НЕ более лимита, чтобы атакующий не смог выжрать память worker'а.
+    image_bytes = await file.read(MAX_PASSPORT_FILE_BYTES + 1)
+
+    if len(image_bytes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Файл пуст.",
+        )
+
+    if len(image_bytes) > MAX_PASSPORT_FILE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Файл слишком большой. Максимум 8 МБ.",
+        )
+
+    _validate_image_content(image_bytes)
+
     try:
-        image_bytes = await file.read()
         encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
         client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -88,19 +135,22 @@ async def scan_passport(
 
         return json.loads(content)
     except OpenAIError as exc:
+        logger.exception("OpenAI OCR call failed.")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Ошибка OpenAI API при распознавании документа: {str(exc)}",
+            detail="Ошибка при распознавании документа. Попробуйте ещё раз.",
         ) from exc
     except json.JSONDecodeError as exc:
+        logger.warning("OpenAI returned non-JSON response.")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="OpenAI вернул ответ, который не удалось разобрать как JSON.",
         ) from exc
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
+        logger.exception("Unexpected error during passport OCR.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось распознать документ. Ошибка: {str(exc)}",
-        ) from exc
+            detail="Не удалось распознать документ.",
+        )

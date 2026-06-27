@@ -1,13 +1,15 @@
-import json
+import hashlib
+import hmac
+import logging
+import os
 import secrets
-import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from fastapi.responses import Response
+from pydantic import BaseModel, EmailStr, Field
 
 from app.api.deps import get_current_user
 from app.api.v1.templates import (
@@ -15,52 +17,62 @@ from app.api.v1.templates import (
     resolve_docuseal_template_id,
     template_display_name,
 )
+from app.core.config import settings
 from app.core.database import supabase
 from app.schemas.auth import CurrentUser
-from app.services.docuseal import docuseal_api_url, docuseal_auth_headers
+from app.services.docuseal import (
+    docuseal_api_url,
+    docuseal_auth_headers,
+    download_signed_submission_pdf,
+)
+from app.services.sms_service import SmsService
+
+logger = logging.getLogger("app.candidates")
 
 router = APIRouter()
-DEBUG_LOG_PATH = Path(__file__).resolve().parents[3] / ".." / "debug-b806ce.log"
 
+# OTP-конфигурация для подтверждения личности кандидата по SMS перед отправкой формы.
+OTP_CODE_TTL_SECONDS = 5 * 60          # код живёт 5 минут
+OTP_MAX_ATTEMPTS = 5                    # максимум 5 попыток ввода кода
+OTP_REQUEST_WINDOW_SECONDS = 60 * 60    # окно для rate-limit на отправку SMS
+OTP_REQUEST_LIMIT_PER_WINDOW = 3        # не более 3 SMS в час на кандидата
+OTP_VERIFIED_TOKEN_TTL_SECONDS = 10 * 60  # токен подтверждения живёт 10 минут после ввода кода
 
-# region agent log
-def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    try:
-        entry = {
-            "sessionId": "b806ce",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as log_file:
-            log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-# endregion
+# Статусы, при которых разрешены повторные действия в публичных эндпоинтах.
+OTP_ALLOWED_STATUSES_FOR_REQUEST = {"invited", "otp_pending", "otp_verified"}
+OTP_ALLOWED_STATUSES_FOR_VERIFY = {"otp_pending", "otp_verified"}
+SUBMIT_ALLOWED_STATUSES = {"otp_verified"}
 
 
 class CreateCandidateRequest(BaseModel):
     candidate_email: EmailStr
     candidate_name: str
+    phone: str = ""
     template_id: int
     require_id_scan: bool = True
     require_student_status: bool = False
 
 
 class CandidateFormSubmitRequest(BaseModel):
-    first_name: str
-    last_name: str
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
     email: EmailStr
-    phone: str
-    pesel: str
-    birth_date: str
-    street: str
-    house_number: str
-    postal_code: str
-    city: str
+    phone: str = Field(min_length=1, max_length=32)
+    pesel: str = Field(min_length=11, max_length=11, pattern=r"^\d{11}$")
+    birth_date: str = Field(min_length=1, max_length=32)
+    street: str = Field(min_length=1, max_length=200)
+    house_number: str = Field(min_length=1, max_length=32)
+    postal_code: str = Field(min_length=1, max_length=16)
+    city: str = Field(min_length=1, max_length=120)
+    verification_token: str = Field(min_length=16, max_length=128)
+
+
+class RequestOtpRequest(BaseModel):
+    phone: str = Field(min_length=5, max_length=32)
+
+
+class VerifyOtpRequest(BaseModel):
+    code: str = Field(min_length=4, max_length=10, pattern=r"^\d+$")
 
 
 class DeleteCandidatesRequest(BaseModel):
@@ -81,6 +93,109 @@ def _candidate_form_url(slug: str) -> str:
     return f"/f/{slug}"
 
 
+def _public_candidate_form_url(slug: str) -> str:
+    base_url = (os.getenv("PUBLIC_APP_URL") or "http://localhost:5173").rstrip("/")
+    return f"{base_url}{_candidate_form_url(slug)}"
+
+
+# region OTP helpers -------------------------------------------------------------
+
+
+def _otp_secret_bytes() -> bytes:
+    """Серверный ключ для HMAC хеширования OTP-кодов и verified-токенов."""
+    secret = (settings.OTP_HMAC_SECRET or "").strip()
+    if not secret:
+        # Fallback на Supabase JWT secret — он тоже серверный и достаточно длинный.
+        secret = (settings.SUPABASE_JWT_SECRET or "").strip()
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OTP secret is not configured on the server.",
+        )
+    return secret.encode("utf-8")
+
+
+def _hash_otp_secret(value: str) -> str:
+    """HMAC-SHA256(server_secret, value) — для безопасного хранения кода/токена."""
+    return hmac.new(_otp_secret_bytes(), value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _generate_otp_code() -> str:
+    """6-значный код, равномерно распределённый, через secrets.randbelow."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _generate_verified_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat()
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _load_candidate_by_slug(slug: str) -> dict[str, Any]:
+    candidate_res = (
+        supabase.table("candidates")
+        .select("*")
+        .eq("slug", slug)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+
+    if not candidate_res.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Formularz kandydata nie istnieje.",
+        )
+
+    return candidate_res.data[0]
+
+
+def _check_otp_rate_limit(candidate: dict[str, Any]) -> None:
+    window_started_at = _parse_iso(candidate.get("otp_window_started_at"))
+    request_count = int(candidate.get("otp_request_count") or 0)
+    now = _now_utc()
+
+    if (
+        window_started_at
+        and (now - window_started_at).total_seconds() < OTP_REQUEST_WINDOW_SECONDS
+        and request_count >= OTP_REQUEST_LIMIT_PER_WINDOW
+    ):
+        retry_after_seconds = int(
+            OTP_REQUEST_WINDOW_SECONDS - (now - window_started_at).total_seconds()
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Zbyt wiele żądań kodu SMS. Spróbuj ponownie za "
+                f"{max(retry_after_seconds // 60, 1)} minut."
+            ),
+        )
+
+
+def _update_candidate(candidate_id: str, payload: dict[str, Any]) -> None:
+    supabase.table("candidates").update(payload).eq("id", candidate_id).execute()
+
+
+# endregion ---------------------------------------------------------------------
+
+
 def _load_agency_profile(organization_id: str, template_id: int | None = None) -> dict[str, Any]:
     try:
         organization_res = (
@@ -92,9 +207,10 @@ def _load_agency_profile(organization_id: str, template_id: int | None = None) -
             .execute()
         )
     except Exception as exc:
+        logger.exception("Failed to load organization %s for candidate.", organization_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось получить данные агентства. Ошибка: {str(exc)}",
+            detail="Не удалось получить данные агентства.",
         ) from exc
 
     if not organization_res.data:
@@ -123,7 +239,10 @@ def _build_docuseal_values(
         "Email": str(payload.email),
         "Phone": payload.phone,
         "Birth Date": payload.birth_date,
-        "Address": f"{payload.street} {payload.house_number}, {payload.postal_code} {payload.city}".strip(),
+        "Address": (
+            f"{payload.street} {payload.house_number}, "
+            f"{payload.postal_code}, {payload.city}"
+        ).strip(),
         "Agency Name": agency_profile["company_name"],
         "Agency NIP": agency_profile["nip"],
         "Agency Address": agency_profile["address"],
@@ -150,8 +269,6 @@ async def _create_docuseal_pdf_submission(
     headers = docuseal_auth_headers()
     request_url = docuseal_api_url("submissions")
 
-    print(f"DEBUG: Sending request to {request_url} with X-Auth-Token header")
-
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             request_url,
@@ -160,13 +277,13 @@ async def _create_docuseal_pdf_submission(
         )
 
     if response.status_code not in {status.HTTP_200_OK, status.HTTP_201_CREATED}:
-        print("❌ --- ОШИБКА ОТ DOCUSEAL ---")
-        print(f"Код ответа: {response.status_code}")
-        print(f"Текст ошибки: {response.text}")
-        print("------------------------------")
+        logger.error(
+            "DocuSeal submissions endpoint returned status=%s",
+            response.status_code,
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"DocuSeal вернул ошибку: {response.status_code} {response.text}",
+            detail="DocuSeal вернул ошибку при создании заявки на подпись.",
         )
 
     docuseal_data = response.json()
@@ -190,18 +307,6 @@ async def create_candidate_invitation(
     first_name, last_name = _split_candidate_name(payload.candidate_name)
     slug = secrets.token_urlsafe(16)
 
-    _debug_log(
-        "candidate-flow",
-        "H1",
-        "aether-backend/app/api/v1/candidates.py:create_candidate_invitation",
-        "creating candidate invitation",
-        {
-            "hasOrganization": bool(current_user.organization_id),
-            "templateId": payload.template_id,
-            "emailDomain": str(payload.candidate_email).split("@")[-1],
-        },
-    )
-
     insert_res = (
         supabase.table("candidates")
         .insert({
@@ -210,6 +315,7 @@ async def create_candidate_invitation(
             "first_name": first_name,
             "last_name": last_name,
             "email": str(payload.candidate_email),
+            "phone": payload.phone.strip(),
             "slug": slug,
             "status": "invited",
             "template_id": payload.template_id,
@@ -226,17 +332,10 @@ async def create_candidate_invitation(
         )
 
     candidate = insert_res.data[0]
-    _debug_log(
-        "candidate-flow",
-        "H2",
-        "aether-backend/app/api/v1/candidates.py:create_candidate_invitation",
-        "candidate invitation created without docuseal submission",
-        {
-            "candidateId": candidate.get("id"),
-            "status": candidate.get("status"),
-            "hasSlug": bool(candidate.get("slug")),
-        },
-    )
+    public_form_url = _public_candidate_form_url(slug)
+
+    if payload.phone.strip():
+        await SmsService.send_invitation_sms(payload.phone.strip(), public_form_url)
 
     return {
         "id": candidate["id"],
@@ -293,35 +392,292 @@ async def delete_candidate(
     return {"status": "success", "deleted_count": deleted_count}
 
 
-@router.post("/{slug}/submit")
-async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
-    _debug_log(
-        "candidate-flow",
-        "H3",
-        "aether-backend/app/api/v1/candidates.py:submit_candidate_form",
-        "candidate submit started",
+@router.get("/{candidate_id}/signed-document")
+async def download_signed_document(
+    candidate_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    candidate_res = (
+        supabase.table("candidates")
+        .select("id, status, docuseal_id, first_name, last_name, template_id")
+        .eq("id", candidate_id)
+        .eq("organization_id", str(current_user.organization_id))
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+
+    if not candidate_res.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Kandydat nie został znaleziony.",
+        )
+
+    candidate = candidate_res.data[0]
+    docuseal_id = candidate.get("docuseal_id")
+
+    if not docuseal_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dla tego kandydata nie utworzono jeszcze zgłoszenia DocuSeal.",
+        )
+
+    candidate_status = str(candidate.get("status") or "").lower()
+    if candidate_status != "signed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dokument nie został jeszcze podpisany.",
+        )
+
+    pdf_bytes, filename = await download_signed_submission_pdf(str(docuseal_id))
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# region public candidate form ---------------------------------------------------
+
+
+@router.post("/{slug}/request-otp")
+async def request_candidate_otp(slug: str, payload: RequestOtpRequest):
+    """
+    Публичный эндпоинт: кандидат запрашивает SMS-код для подтверждения личности.
+    Защищён rate-limit'ом (3 SMS в час) и проверкой статуса кандидата.
+    """
+    candidate = _load_candidate_by_slug(slug)
+    candidate_status = str(candidate.get("status") or "").lower()
+
+    if candidate_status not in OTP_ALLOWED_STATUSES_FOR_REQUEST:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Ten formularz został już wypełniony i nie można go użyć ponownie.",
+        )
+
+    candidate_phone = (candidate.get("phone") or "").strip()
+    submitted_phone = payload.phone.strip().replace(" ", "")
+
+    if not candidate_phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Numer telefonu nie jest skonfigurowany dla tego kandydata.",
+        )
+
+    if candidate_phone.replace(" ", "") != submitted_phone:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Numer telefonu nie pasuje do zaproszenia.",
+        )
+
+    _check_otp_rate_limit(candidate)
+
+    code = _generate_otp_code()
+    code_hash = _hash_otp_secret(code)
+    now = _now_utc()
+    expires_at = now + timedelta(seconds=OTP_CODE_TTL_SECONDS)
+
+    window_started_at = _parse_iso(candidate.get("otp_window_started_at"))
+    request_count = int(candidate.get("otp_request_count") or 0)
+
+    if (
+        window_started_at
+        and (now - window_started_at).total_seconds() < OTP_REQUEST_WINDOW_SECONDS
+    ):
+        new_request_count = request_count + 1
+        new_window_started = window_started_at
+    else:
+        new_request_count = 1
+        new_window_started = now
+
+    _update_candidate(
+        candidate["id"],
         {
-            "slugLength": len(slug),
-            "emailDomain": str(payload.email).split("@")[-1],
-            "hasPesel": bool(payload.pesel),
+            "status": "otp_pending",
+            "otp_code_hash": code_hash,
+            "otp_expires_at": _iso(expires_at),
+            "otp_attempts_count": 0,
+            "otp_verified_token_hash": None,
+            "otp_verified_token_expires_at": None,
+            "otp_window_started_at": _iso(new_window_started),
+            "otp_request_count": new_request_count,
+            "otp_last_sent_at": _iso(now),
         },
     )
 
-    candidate_res = (
-        supabase.table("candidates")
-        .select("*")
-        .eq("slug", slug)
-        .is_("deleted_at", "null")
-        .execute()
+    sms_message = (
+        f"Aether Flow: Twój kod weryfikacyjny to {code}. "
+        "Kod jest ważny przez 5 minut."
     )
-    candidate = candidate_res.data[0] if candidate_res.data else None
 
-    if not candidate:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Formularz kandydata nie istnieje.")
+    try:
+        await SmsService.send_raw_sms(candidate_phone, sms_message)
+    except Exception:
+        logger.exception("Failed to send OTP SMS to candidate %s.", candidate["id"])
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Nie udało się wysłać SMS-a z kodem weryfikacyjnym.",
+        )
+
+    return {"status": "sent", "expires_in_seconds": OTP_CODE_TTL_SECONDS}
+
+
+@router.post("/{slug}/verify-otp")
+async def verify_candidate_otp(slug: str, payload: VerifyOtpRequest):
+    """
+    Публичный эндпоинт: проверка SMS-кода. После N=5 ошибок код инвалидируется.
+    После успеха возвращается одноразовый verification_token, который кандидат
+    обязан прислать в /submit.
+    """
+    candidate = _load_candidate_by_slug(slug)
+    candidate_status = str(candidate.get("status") or "").lower()
+
+    if candidate_status not in OTP_ALLOWED_STATUSES_FOR_VERIFY:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Brak aktywnego kodu weryfikacyjnego.",
+        )
+
+    stored_hash = candidate.get("otp_code_hash")
+    expires_at = _parse_iso(candidate.get("otp_expires_at"))
+    attempts = int(candidate.get("otp_attempts_count") or 0)
+
+    if not stored_hash or not expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Brak aktywnego kodu weryfikacyjnego.",
+        )
+
+    if _now_utc() > expires_at:
+        _update_candidate(
+            candidate["id"],
+            {
+                "otp_code_hash": None,
+                "otp_expires_at": None,
+                "otp_attempts_count": 0,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Kod weryfikacyjny wygasł. Poproś o nowy.",
+        )
+
+    if attempts >= OTP_MAX_ATTEMPTS:
+        _update_candidate(
+            candidate["id"],
+            {
+                "otp_code_hash": None,
+                "otp_expires_at": None,
+                "otp_attempts_count": 0,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Przekroczono limit prób. Poproś o nowy kod.",
+        )
+
+    candidate_hash = _hash_otp_secret(payload.code)
+
+    if not hmac.compare_digest(stored_hash, candidate_hash):
+        _update_candidate(
+            candidate["id"],
+            {"otp_attempts_count": attempts + 1},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nieprawidłowy kod weryfikacyjny.",
+        )
+
+    verification_token = _generate_verified_token()
+    verification_token_hash = _hash_otp_secret(verification_token)
+    verification_expires = _now_utc() + timedelta(seconds=OTP_VERIFIED_TOKEN_TTL_SECONDS)
+
+    _update_candidate(
+        candidate["id"],
+        {
+            "status": "otp_verified",
+            "otp_code_hash": None,
+            "otp_expires_at": None,
+            "otp_attempts_count": 0,
+            "otp_verified_token_hash": verification_token_hash,
+            "otp_verified_token_expires_at": _iso(verification_expires),
+        },
+    )
+
+    return {
+        "status": "verified",
+        "verification_token": verification_token,
+        "expires_in_seconds": OTP_VERIFIED_TOKEN_TTL_SECONDS,
+    }
+
+
+@router.post("/{slug}/submit")
+async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
+    """
+    Публичный эндпоинт: отправка анкеты. Требует:
+      1) валидный verification_token, выданный после прохождения OTP,
+      2) статус кандидата = "otp_verified" (т.е. форма ещё не была отправлена).
+    Повторный submit отдаёт 410 Gone.
+    """
+    candidate = _load_candidate_by_slug(slug)
+    candidate_status = str(candidate.get("status") or "").lower()
+
+    if candidate_status not in SUBMIT_ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Ten formularz został już wypełniony lub wymaga weryfikacji SMS.",
+        )
+
+    stored_token_hash = candidate.get("otp_verified_token_hash")
+    stored_token_expires = _parse_iso(candidate.get("otp_verified_token_expires_at"))
+
+    if not stored_token_hash or not stored_token_expires:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Brak weryfikacji SMS. Wykonaj weryfikację jeszcze raz.",
+        )
+
+    if _now_utc() > stored_token_expires:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesja weryfikacji wygasła. Wykonaj weryfikację jeszcze raz.",
+        )
+
+    submitted_token_hash = _hash_otp_secret(payload.verification_token)
+    if not hmac.compare_digest(stored_token_hash, submitted_token_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Nieprawidłowy token weryfikacji.",
+        )
 
     candidate_name = f"{payload.first_name} {payload.last_name}".strip()
     document_title = f"Договор для {candidate_name}"
-    submitted_at = datetime.now(timezone.utc).isoformat()
+    submitted_at = _now_utc()
+    submitted_at_iso = _iso(submitted_at)
+
+    # Сразу после успешной валидации токена — переводим в "submitting", чтобы
+    # повторные POST'ы с тем же токеном (network retry, double-click) попали в 410.
+    invalidate_token_payload = {
+        "status": "submitting",
+        "otp_verified_token_hash": None,
+        "otp_verified_token_expires_at": None,
+    }
+    update_res = (
+        supabase.table("candidates")
+        .update(invalidate_token_payload)
+        .eq("id", candidate["id"])
+        .eq("status", "otp_verified")
+        .execute()
+    )
+
+    if not update_res.data:
+        # Кто-то уже выиграл гонку — другой submit идёт прямо сейчас.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ten formularz jest właśnie wysyłany. Spróbuj ponownie za chwilę.",
+        )
+
     candidate_form_update = {
         "first_name": payload.first_name,
         "last_name": payload.last_name,
@@ -333,8 +689,8 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
         "house_number": payload.house_number,
         "postal_code": payload.postal_code,
         "city": payload.city,
-        "form_data": payload.model_dump(mode="json"),
-        "submitted_at": submitted_at,
+        "form_data": payload.model_dump(mode="json", exclude={"verification_token"}),
+        "submitted_at": submitted_at_iso,
         "status": "submitted",
     }
     supabase.table("candidates").update(candidate_form_update).eq("id", candidate["id"]).execute()
@@ -350,7 +706,7 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
             "candidate_phone": payload.phone,
             "candidate_pesel": payload.pesel,
             "current_status": "pending",
-            "form_filled_at": submitted_at,
+            "form_filled_at": submitted_at_iso,
         })
         .execute()
     )
@@ -362,63 +718,60 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
         )
 
     document = document_res.data[0]
-
     organization_id = str(candidate["organization_id"])
-    agency_profile = _load_agency_profile(organization_id, candidate.get("template_id"))
 
     try:
+        agency_profile = _load_agency_profile(organization_id, candidate.get("template_id"))
         docuseal_id = await _create_docuseal_pdf_submission(payload, agency_profile)
     except HTTPException:
-        supabase.table("candidates").update({
-            "status": "error",
-            "document_id": document["id"],
-        }).eq("id", candidate["id"]).execute()
-        supabase.table("documents").update({"current_status": "error"}).eq("id", document["id"]).execute()
+        _update_candidate(
+            candidate["id"],
+            {"status": "error", "document_id": document["id"]},
+        )
+        supabase.table("documents").update({"current_status": "error"}).eq(
+            "id", document["id"]
+        ).execute()
         raise
     except httpx.HTTPError as exc:
-        supabase.table("candidates").update({
-            "status": "error",
-            "document_id": document["id"],
-        }).eq("id", candidate["id"]).execute()
-        supabase.table("documents").update({"current_status": "error"}).eq("id", document["id"]).execute()
+        logger.exception("DocuSeal API connection failed during candidate submit.")
+        _update_candidate(
+            candidate["id"],
+            {"status": "error", "document_id": document["id"]},
+        )
+        supabase.table("documents").update({"current_status": "error"}).eq(
+            "id", document["id"]
+        ).execute()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Не удалось подключиться к DocuSeal API: {str(exc)}",
+            detail="Не удалось подключиться к DocuSeal API.",
         ) from exc
-    except Exception as exc:
-        supabase.table("candidates").update({
-            "status": "error",
-            "document_id": document["id"],
-        }).eq("id", candidate["id"]).execute()
-        supabase.table("documents").update({"current_status": "error"}).eq("id", document["id"]).execute()
+    except Exception:
+        logger.exception("Unexpected error during candidate submit.")
+        _update_candidate(
+            candidate["id"],
+            {"status": "error", "document_id": document["id"]},
+        )
+        supabase.table("documents").update({"current_status": "error"}).eq(
+            "id", document["id"]
+        ).execute()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось отправить документ в DocuSeal: {str(exc)}",
-        ) from exc
+            detail="Не удалось отправить документ в DocuSeal.",
+        )
 
-    sent_at = datetime.now(timezone.utc).isoformat()
+    sent_at = _iso(_now_utc())
     supabase.table("documents").update({
         "docuseal_id": docuseal_id,
         "current_status": "sent",
         "sent_at": sent_at,
     }).eq("id", document["id"]).execute()
 
-    supabase.table("candidates").update({
-        "status": "sent",
-        "document_id": document["id"],
-        "docuseal_id": docuseal_id,
-    }).eq("id", candidate["id"]).execute()
-
-    _debug_log(
-        "candidate-flow",
-        "H3",
-        "aether-backend/app/api/v1/candidates.py:submit_candidate_form",
-        "candidate submit completed and docuseal submission created",
+    _update_candidate(
+        candidate["id"],
         {
-            "candidateId": candidate.get("id"),
-            "documentId": document.get("id"),
-            "hasDocusealId": bool(docuseal_id),
-            "docusealTemplateId": agency_profile["docuseal_template_id"],
+            "status": "sent",
+            "document_id": document["id"],
+            "docuseal_id": docuseal_id,
         },
     )
 
@@ -428,6 +781,9 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
         "document_id": document["id"],
         "docuseal_id": docuseal_id,
     }
+
+
+# endregion ----------------------------------------------------------------------
 
 
 def _enrich_candidates_with_templates(
@@ -457,7 +813,7 @@ def _soft_delete_candidates(
     candidate_ids: list[str] | None = None,
     delete_all: bool = False,
 ) -> int:
-    deleted_at = datetime.now(timezone.utc).isoformat()
+    deleted_at = _iso(_now_utc())
     query = (
         supabase.table("candidates")
         .update({"deleted_at": deleted_at})
@@ -480,7 +836,7 @@ def _soft_delete_candidates(
 @router.get("")
 async def list_candidates(current_user: CurrentUser = Depends(get_current_user)):
     """
-    Получение списка кандидатов строго для организации текущего рекрутера
+    Получение списка кандидатов строго для организации текущего рекрутера.
     """
     result = (
         supabase.table("candidates")

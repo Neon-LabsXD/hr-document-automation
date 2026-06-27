@@ -58,7 +58,7 @@ export function getActiveCandidates(documents: DocumentRecord[]) {
 }
 
 export function getActiveContractsCount(candidates: DocumentRecord[]) {
-  return candidates.length * 10
+  return candidates.length
 }
 
 export function getPendingSignatureCount(candidates: DocumentRecord[]) {

@@ -1,22 +1,33 @@
-import { useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, FileText, Mail, Send, Smartphone, X } from 'lucide-react'
-import { useAppContext, type FormLinkConfig, type FormTemplate } from '../context/AppContext'
-import { sendDocumentInvite } from '../lib/backend'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, FileText, Send, Smartphone, X } from 'lucide-react'
+import { EmptyState } from './EmptyState'
+import { useAppContext, type FormLinkConfig } from '../context/AppContext'
+import { createCandidateInvitation, listTemplates, type AgencyTemplate } from '../lib/backend'
 
 interface CreateDocumentModalProps {
   isOpen: boolean
   onClose: () => void
 }
 
-const templates: FormTemplate[] = ['Umowa Zlecenie + Oświadczenie', 'Umowa B2B (wersja 2026) + Załączniki']
-const docusealTemplateId = Number(import.meta.env.VITE_DOCUSEAL_TEMPLATE_ID ?? 1)
+function normalizeCandidatePhone(phone: string) {
+  const trimmed = phone.trim()
+  const digitsOnly = trimmed.replace(/\D/g, '')
+
+  if (!trimmed.startsWith('+') && digitsOnly.length === 9) {
+    return `+48${digitsOnly}`
+  }
+
+  return trimmed
+}
 
 export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProps) {
-  const { generateFormLink } = useAppContext()
+  const { fetchCandidates } = useAppContext()
   const [step, setStep] = useState(1)
-  const [template, setTemplate] = useState<FormTemplate>(templates[0])
-  const [requireIdScan, setRequireIdScan] = useState(true)
-  const [requireStudentStatus, setRequireStudentStatus] = useState(false)
+  const [templates, setTemplates] = useState<AgencyTemplate[]>([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null)
+  const [selectedTemplateName, setSelectedTemplateName] = useState('')
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false)
+  const [templatesError, setTemplatesError] = useState('')
   const [generatedLink, setGeneratedLink] = useState<FormLinkConfig | null>(null)
   const [inviteName, setInviteName] = useState('')
   const [inviteEmail, setInviteEmail] = useState('')
@@ -27,15 +38,68 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
   const [isSendingInvite, setIsSendingInvite] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
 
+  useEffect(() => {
+    if (!isOpen) {
+      return
+    }
+
+    let ignore = false
+
+    async function loadTemplates() {
+      setIsLoadingTemplates(true)
+      setTemplatesError('')
+
+      try {
+        const response = await listTemplates()
+
+        if (ignore) {
+          return
+        }
+
+        setTemplates(response.templates)
+
+        const defaultTemplate =
+          response.templates.find((template) => template.is_default_send) ?? response.templates[0] ?? null
+
+        if (defaultTemplate) {
+          setSelectedTemplateId(defaultTemplate.id)
+          setSelectedTemplateName(defaultTemplate.name || defaultTemplate.filename)
+        } else {
+          setSelectedTemplateId(null)
+          setSelectedTemplateName('')
+        }
+      } catch (error) {
+        if (ignore) {
+          return
+        }
+
+        setTemplates([])
+        setSelectedTemplateId(null)
+        setSelectedTemplateName('')
+        setTemplatesError(error instanceof Error ? error.message : 'Nie udało się pobrać szablonów.')
+      } finally {
+        if (!ignore) {
+          setIsLoadingTemplates(false)
+        }
+      }
+    }
+
+    void loadTemplates()
+
+    return () => {
+      ignore = true
+    }
+  }, [isOpen])
+
   if (!isOpen) {
     return null
   }
 
   const resetModalState = () => {
     setStep(1)
-    setTemplate(templates[0])
-    setRequireIdScan(true)
-    setRequireStudentStatus(false)
+    const defaultTemplate = templates.find((template) => template.is_default_send) ?? templates[0] ?? null
+    setSelectedTemplateId(defaultTemplate?.id ?? null)
+    setSelectedTemplateName(defaultTemplate?.name || defaultTemplate?.filename || '')
     setGeneratedLink(null)
     setInviteName('')
     setInviteEmail('')
@@ -56,13 +120,19 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
   }
 
   const handleGenerateLink = () => {
-    const link = generateFormLink({
-      template,
-      requireIdScan,
-      requireStudentStatus,
-    })
-    setGeneratedLink(link)
+    if (!selectedTemplateId) {
+      setInviteError('Wybierz szablon przed wygenerowaniem formularza.')
+      return
+    }
+
+    setInviteError('')
     setStep(2)
+  }
+
+  const handleSelectTemplate = (template: AgencyTemplate) => {
+    setSelectedTemplateId(template.id)
+    setSelectedTemplateName(template.name || template.filename)
+    setInviteError('')
   }
 
   const handleCopyLink = async () => {
@@ -89,8 +159,8 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
   }
 
   const handleSendInvite = async () => {
-    if (!inviteName.trim() || !inviteEmail.trim()) {
-      setInviteError('Podaj imię, nazwisko i e-mail kandydata.')
+    if (!inviteName.trim() || !inviteEmail.trim() || !invitePhone.trim()) {
+      setInviteError('Podaj imię, nazwisko, e-mail i telefon kandydata.')
       return
     }
 
@@ -98,13 +168,33 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
     setInviteSent(false)
     setIsSendingInvite(true)
 
+    if (!selectedTemplateId) {
+      setInviteError('Wybierz szablon przed wysłaniem zaproszenia.')
+      setIsSendingInvite(false)
+      return
+    }
+
     try {
-      await sendDocumentInvite({
-        template_id: docusealTemplateId,
+      const normalizedPhone = normalizeCandidatePhone(invitePhone)
+
+      const invitation = await createCandidateInvitation({
+        template_id: selectedTemplateId,
         candidate_email: inviteEmail.trim(),
         candidate_name: inviteName.trim(),
+        phone: normalizedPhone,
+        require_id_scan: false,
+        require_student_status: false,
+      })
+      const url = `${window.location.origin}${invitation.url}`
+      setGeneratedLink({
+        template: selectedTemplateName,
+        requireIdScan: false,
+        requireStudentStatus: false,
+        slug: invitation.slug,
+        url,
       })
       setInviteSent(true)
+      await fetchCandidates()
     } catch (error) {
       setInviteError(error instanceof Error ? error.message : 'Nie udało się wysłać zaproszenia.')
     } finally {
@@ -131,11 +221,11 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
         <div className="create-document-heading">
           <span className="create-document-step">Krok {step} z 2</span>
           <h2 id="create-document-title">
-            {step === 1 ? 'Wybierz szablon i dokumenty' : 'Udostępnij formularz'}
+            {step === 1 ? 'Wybierz dokument' : 'Udostępnij formularz'}
           </h2>
           <p>
             {step === 1
-              ? 'Skonfiguruj pakiet dokumentów i wymagane załączniki dla kandydata.'
+              ? 'Wybierz szablon umowy, który otrzyma kandydat.'
               : 'Wyślij ten link do kandydata. Po uzupełnieniu danych, umowa wygeneruje się automatycznie.'}
           </p>
         </div>
@@ -147,48 +237,44 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
 
         {step === 1 && (
           <div className="create-document-template-step">
-            <div className="create-template-grid create-template-grid-single">
-              {templates.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  className={template === option ? 'create-template-card create-template-card-active' : 'create-template-card'}
-                  onClick={() => setTemplate(option)}
-                >
-                  <span>
-                    <FileText />
-                  </span>
-                  <strong>{option}</strong>
-                  <small>
-                    {option.includes('B2B')
-                      ? 'Dla kontraktów biznesowych z pełnym pakietem załączników'
-                      : 'Dla kandydatów na umowę zlecenie ze standardowym oświadczeniem'}
-                  </small>
-                </button>
-              ))}
-            </div>
+            {isLoadingTemplates ? (
+              <p className="create-template-loading">Ładowanie szablonów...</p>
+            ) : templates.length === 0 ? (
+              <EmptyState
+                message="У вас пока нет загруженных шаблонов."
+                description="Пожалуйста, перейдите в 'Ustawienia agencji' и добавьте свой первый DOCX-шаблон."
+              />
+            ) : (
+              <div className="create-template-grid create-template-grid-single">
+                {templates.map((template) => (
+                  <button
+                    key={`${template.id}-${template.filename}`}
+                    type="button"
+                    className={
+                      selectedTemplateId === template.id
+                        ? 'create-template-card create-template-card-active'
+                        : 'create-template-card'
+                    }
+                    onClick={() => handleSelectTemplate(template)}
+                  >
+                    <span>
+                      <FileText />
+                    </span>
+                    <strong>{template.name || template.filename}</strong>
+                    <small>
+                      {template.is_default_send
+                        ? 'Domyślny szablon do wysyłki'
+                        : 'Szablon PDF z Supabase Storage'}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            )}
 
-            <div className="create-document-checkboxes">
-              <label className="create-document-checkbox">
-                <input
-                  type="checkbox"
-                  checked={requireIdScan}
-                  onChange={(event) => setRequireIdScan(event.target.checked)}
-                />
-                <span>Wymagaj skanu dokumentu tożsamości</span>
-              </label>
-              <label className="create-document-checkbox">
-                <input
-                  type="checkbox"
-                  checked={requireStudentStatus}
-                  onChange={(event) => setRequireStudentStatus(event.target.checked)}
-                />
-                <span>Wymagaj statusu studenta</span>
-              </label>
-            </div>
+            {(templatesError || inviteError) && <p className="auth-error">{templatesError || inviteError}</p>}
 
             <div className="create-document-actions">
-              <button type="button" onClick={handleGenerateLink}>
+              <button type="button" disabled={isLoadingTemplates || templates.length === 0 || !selectedTemplateId} onClick={handleGenerateLink}>
                 Generuj link do formularza
                 <ArrowRight />
               </button>
@@ -196,25 +282,29 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
           </div>
         )}
 
-        {step === 2 && generatedLink && (
+        {step === 2 && (
           <div className="create-document-share-step">
             <div className="create-link-success">
-              <strong>Link do formularza został wygenerowany!</strong>
-              <span>Skopiuj link lub wyślij zaproszenie bezpośrednio do kandydata.</span>
+              <strong>Przygotuj zaproszenie dla kandydata</strong>
+              <span>Po utworzeniu zaproszenia kandydat otrzyma publiczny formularz. DocuSeal uruchomi się dopiero po wysłaniu ankiety.</span>
             </div>
 
-            <div className="create-link-row">
-              <input readOnly value={generatedLink.url} aria-label="Wygenerowany link do formularza" />
-              <button className="create-copy-button" type="button" onClick={handleCopyLink}>
-                {copied ? <Check /> : <Copy />}
-                {copied ? 'Skopiowano' : 'Kopiuj link'}
+            {generatedLink && (
+              <div className="create-link-row">
+                <input readOnly value={generatedLink.url} aria-label="Wygenerowany link do formularza" />
+                <button className="create-copy-button" type="button" onClick={handleCopyLink}>
+                  {copied ? <Check /> : <Copy />}
+                  {copied ? 'Skopiowano' : 'Kopiuj link'}
+                </button>
+              </div>
+            )}
+
+            {generatedLink && (
+              <button className="create-open-form-button" type="button" onClick={handleOpenFormPreview}>
+                <ExternalLink />
+                Otwórz formularz (test)
               </button>
-            </div>
-
-            <button className="create-open-form-button" type="button" onClick={handleOpenFormPreview}>
-              <ExternalLink />
-              Otwórz formularz (test)
-            </button>
+            )}
 
             <div className="create-link-divider">
               <span>lub</span>
@@ -251,7 +341,7 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
             <button
               className="create-invite-button"
               type="button"
-              disabled={isSendingInvite || !inviteName.trim() || !inviteEmail.trim()}
+              disabled={isSendingInvite || !inviteName.trim() || !inviteEmail.trim() || !invitePhone.trim()}
               onClick={handleSendInvite}
             >
               <Send />
@@ -262,9 +352,8 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
 
             {inviteSent && (
               <p className="create-invite-feedback">
-                <Mail />
                 <Smartphone />
-                Zaproszenie zostało wysłane na wskazany e-mail.
+                SMS z linkiem zostało wysłane!
               </p>
             )}
 

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import httpx
@@ -14,6 +15,8 @@ from app.services.document_service import (
     generate_tenant_document,
 )
 from app.services.docuseal import docuseal_api_url, docuseal_auth_headers
+
+logger = logging.getLogger("app.documents")
 
 router = APIRouter()
 
@@ -126,10 +129,14 @@ async def send_document(
             )
 
         if response.status_code != status.HTTP_200_OK:
+            logger.error(
+                "DocuSeal submissions endpoint returned status=%s",
+                response.status_code,
+            )
             await _mark_document_as_error(str(document_id))
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"DocuSeal вернул ошибку: {response.status_code} {response.text}",
+                detail="DocuSeal вернул ошибку при создании заявки на подпись.",
             )
 
         docuseal_data = response.json()
@@ -155,16 +162,18 @@ async def send_document(
     except HTTPException:
         raise
     except httpx.HTTPError as exc:
+        logger.exception("DocuSeal API connection failed during /documents/send.")
         if document_id:
             await _mark_document_as_error(str(document_id))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Не удалось подключиться к DocuSeal API: {str(exc)}",
+            detail="Не удалось подключиться к DocuSeal API.",
         ) from exc
-    except Exception as exc:
+    except Exception:
+        logger.exception("Unexpected error during /documents/send.")
         if document_id:
             await _mark_document_as_error(str(document_id))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось отправить документ на подпись: {str(exc)}",
-        ) from exc
+            detail="Не удалось отправить документ на подпись.",
+        )

@@ -1,18 +1,18 @@
 import { useState } from 'react'
 import { FileText, Mail, ShieldCheck, Sparkles, X } from 'lucide-react'
+import { PrivacyPolicyContent } from './PrivacyPolicyContent'
+import { RegulaminContent } from './RegulaminContent'
 
 type FooterModalType = 'regulamin' | 'privacy' | null
 
-const modalCopy: Record<Exclude<FooterModalType, null>, { title: string; description: string }> = {
+const modalCopy: Record<Exclude<FooterModalType, null>, { title: string; kicker: string }> = {
   regulamin: {
     title: 'Regulamin platformy',
-    description:
-      'Strona w budowie. W tym miejscu pojawi się pełny regulamin świadczenia usług drogą elektroniczną dla platformy Aether Flow.',
+    kicker: 'Dokument prawny B2B',
   },
   privacy: {
     title: 'Polityka Prywatności (RODO)',
-    description:
-      'Strona w budowie. W tym miejscu opublikujemy zasady przetwarzania danych osobowych, obowiązki informacyjne RODO oraz politykę bezpieczeństwa.',
+    kicker: 'Ochrona danych osobowych',
   },
 }
 
@@ -30,7 +30,7 @@ export function Footer() {
             </span>
             <div>
               <strong>Aether Flow</strong>
-              <small>Aetherai.pl</small>
+              <small>Aetherflow.pl</small>
             </div>
           </a>
           <p>Bezpieczna automatyzacja dokumentów HR i zaawansowany e-podpis dla agencji rekrutacyjnych.</p>
@@ -44,9 +44,11 @@ export function Footer() {
             <br />
             ul. Marszałkowska 10/2, 00-001 Warszawa
             <br />
-            NIP: 0000000000 | REGON: 000000000
+            NIP: [NIP_PLACEHOLDER] | REGON: [REGON_PLACEHOLDER]
             <br />
-            KRS: 0000000000
+            KRS: [KRS_PLACEHOLDER]
+            <br />
+            Kapitał zakładowy: [KAPITAL_PLACEHOLDER] PLN
           </address>
         </section>
 
@@ -70,7 +72,7 @@ export function Footer() {
       {modalContent && (
         <div className="footer-modal-backdrop" role="presentation" onMouseDown={() => setActiveModal(null)}>
           <section
-            className="footer-modal"
+            className="footer-modal footer-modal-legal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="footer-modal-title"
@@ -79,11 +81,13 @@ export function Footer() {
             <button className="footer-modal-close" type="button" aria-label="Zamknij okno" onClick={() => setActiveModal(null)}>
               <X />
             </button>
-            <span className="footer-modal-kicker">Strona w budowie</span>
+            <span className="footer-modal-kicker">{modalContent.kicker}</span>
             <h2 id="footer-modal-title">{modalContent.title}</h2>
-            <p>{modalContent.description}</p>
+            <div className="footer-modal-scroll">
+              {activeModal === 'regulamin' ? <RegulaminContent /> : <PrivacyPolicyContent />}
+            </div>
             <button className="footer-modal-action" type="button" onClick={() => setActiveModal(null)}>
-              Rozumiem
+              Zamknij
             </button>
           </section>
         </div>

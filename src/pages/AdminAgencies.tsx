@@ -11,8 +11,16 @@ import {
   X,
 } from 'lucide-react'
 import { Header } from '../components/Header'
+import { EmptyState } from '../components/EmptyState'
 import { MetricCard } from '../components/UI/MetricCard'
 import { useAppContext, type AgencyAccess, type AgencyInput } from '../context/AppContext'
+import {
+  formatPlnAmount,
+  formatUsageRatio,
+  getActiveSubscriptionCount,
+  getGlobalSmtpUsage,
+  getMonthlyRecurringRevenue,
+} from '../utils/adminMetrics'
 
 const paymentStatusLabels: Record<AgencyAccess['paymentStatus'], string> = {
   paid: 'Opłacono',
@@ -61,6 +69,10 @@ export function AdminAgencies() {
 
     return [agency.name, agency.nip, agency.plan].some((value) => value.toLowerCase().includes(searchValue))
   })
+  const monthlyRevenue = getMonthlyRecurringRevenue(agencies)
+  const activeSubscriptions = getActiveSubscriptionCount(agencies)
+  const smtpUsage = getGlobalSmtpUsage(agencies)
+  const hasAgencies = agencies.length > 0
 
   const openLimitModal = (agency: AgencyAccess) => {
     setEditedAgency(agency)
@@ -166,23 +178,23 @@ export function AdminAgencies() {
       <section className="admin-metrics-grid">
         <MetricCard
           label="MRR (Miesięczny przychód)"
-          value="1,397 zł"
+          value={formatPlnAmount(monthlyRevenue)}
           description="aktywny przychód abonamentowy"
-          delta="+ 12.4%"
+          delta={hasAgencies ? `${activeSubscriptions} aktywne` : '0%'}
           icon={TrendingUp}
         />
         <MetricCard
           label="Aktywne subskrypcje"
-          value="3 agencje"
+          value={String(activeSubscriptions)}
           description="firmy z dostępem do platformy"
-          delta="live"
+          delta={hasAgencies ? `${agencies.length} łącznie` : '0'}
           icon={CreditCard}
         />
         <MetricCard
           label="Zużycie globalne SMTP"
-          value="265 / 2,000"
+          value={formatUsageRatio(smtpUsage.used, smtpUsage.limit)}
           description="wiadomości w bieżącym miesiącu"
-          delta="W normie"
+          delta={smtpUsage.limit === 0 ? '0%' : `${Math.round((smtpUsage.used / smtpUsage.limit) * 100)}%`}
           icon={MailCheck}
         />
       </section>
@@ -218,7 +230,19 @@ export function AdminAgencies() {
             </tr>
           </thead>
           <tbody>
-            {filteredAgencies.map((agency) => (
+            {filteredAgencies.length === 0 ? (
+              <EmptyState
+                variant="table"
+                colSpan={8}
+                message={agencies.length === 0 ? 'Lista agencji jest pusta' : 'Brak wyników wyszukiwania'}
+                description={
+                  agencies.length === 0
+                    ? 'Dodaj pierwszą agencję ręcznie lub wygeneruj kod zaproszenia.'
+                    : 'Spróbuj zmienić frazę wyszukiwania.'
+                }
+              />
+            ) : (
+              filteredAgencies.map((agency) => (
               <tr key={agency.id}>
                 <td>{agency.name}</td>
                 <td>{agency.nip}</td>
@@ -260,7 +284,8 @@ export function AdminAgencies() {
                   </div>
                 </td>
               </tr>
-            ))}
+            ))
+            )}
           </tbody>
         </table>
       </section>

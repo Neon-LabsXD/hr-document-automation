@@ -1,4 +1,5 @@
 import { Menu, Sparkles } from 'lucide-react'
+import { useAppContext } from '../context/AppContext'
 import type { AppPage } from '../types'
 
 interface LandingNavProps {
@@ -8,6 +9,12 @@ interface LandingNavProps {
 }
 
 export function LandingNav({ onNavigate, onAuthOpen, activeNav }: LandingNavProps) {
+  const { isAuthenticated, role } = useAppContext()
+
+  const goToDashboard = () => {
+    onNavigate?.(role === 'super_admin' ? 'admin-agencies' : 'dashboard')
+  }
+
   const goToLandingSection = (hash: string) => {
     onNavigate?.('landing')
     window.requestAnimationFrame(() => {
@@ -47,8 +54,12 @@ export function LandingNav({ onNavigate, onAuthOpen, activeNav }: LandingNavProp
           Zaproponuj funkcję
         </button>
       </div>
-      <button className="nav-cta" type="button" onClick={onAuthOpen}>
-        Zaloguj się
+      <button
+        className="nav-cta"
+        type="button"
+        onClick={isAuthenticated ? goToDashboard : onAuthOpen}
+      >
+        {isAuthenticated ? 'Przejdź do pulpitu' : 'Zaloguj się'}
       </button>
       <button className="mobile-menu" type="button" aria-label="Otwórz menu">
         <Menu />

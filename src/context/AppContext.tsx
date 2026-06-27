@@ -1,5 +1,9 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
-import { ApiError, apiRequest, clearAccessToken, getAccessToken, setAccessToken } from '../lib/api'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { Session } from '@supabase/supabase-js'
+import { ApiError, API_BASE_URL, apiRequest, clearAccessToken, getAccessToken, setAccessToken } from '../lib/api'
+import { mapBackendCandidateToDocumentRecord } from '../utils/candidateMapper'
+import { deleteCandidates as deleteCandidatesRequest, downloadSignedCandidateDocument, getOrganizationProfile, type OrganizationProfile } from '../lib/backend'
+import { supabase } from '../lib/supabase'
 
 export type DocumentStatus =
   | 'PENDING_GENERATION'
@@ -17,21 +21,20 @@ export type FeatureRequestStatus = 'Nowe' | 'W realizacji' | 'Zrobione'
 
 export interface DocumentRecord {
   id: number
+  backendId: string
   initials: string
   candidateName: string
   candidateEmail: string
   role: string
   company: string
-  contractType: 'B2B' | 'Umowa zlecenie' | 'Umowa o pracę'
+  contractType: string
   status: DocumentStatus
   lastChange: string
   recruiter: string
   deleted?: boolean
 }
 
-export type FormTemplate =
-  | 'Umowa Zlecenie + Oświadczenie'
-  | 'Umowa B2B (wersja 2026) + Załączniki'
+export type FormTemplate = string
 
 export interface FormLinkConfig {
   template: FormTemplate
@@ -108,9 +111,17 @@ interface AuthResult {
   error?: string
 }
 
+interface AuthUser {
+  email: string
+}
+
 interface AppContextValue {
   role: UserRole
+  user: AuthUser | null
+  isAuthenticated: boolean
+  authReady: boolean
   currentUserEmail: string | null
+  organizationProfile: OrganizationProfile | null
   documents: DocumentRecord[]
   centralCandidatesList: DocumentRecord[]
   agencies: AgencyAccess[]
@@ -130,7 +141,8 @@ interface AppContextValue {
   generateFormLink: (config: Omit<FormLinkConfig, 'slug' | 'url'>) => FormLinkConfig
   submitCandidateForm: (data: CandidateFormInput) => DocumentRecord
   updateDocumentStatus: (documentId: number, status: DocumentStatus) => void
-  softDeleteDocument: (documentId: number) => void
+  deleteDocuments: (documentIds: number[]) => Promise<void>
+  deleteAllDocuments: () => Promise<void>
   updateAgencySignatureLimit: (agencyId: number, signatureLimit: number) => void
   updateAgencyPlan: (agencyId: number, plan: string, signatureLimit: number) => void
   blockAgencyAccess: (agencyId: number) => void
@@ -138,173 +150,14 @@ interface AppContextValue {
   deleteInviteCode: (code: string) => void
   addFeatureProposal: (proposal: FeatureProposalInput) => FeatureProposal
   updateFeatureProposalStatus: (proposalId: number, status: FeatureRequestStatus) => void
+  fetchCandidates: () => Promise<void>
+  fetchOrganizationProfile: () => Promise<void>
 }
 
-const initialDocuments: DocumentRecord[] = [
-  {
-    id: 1,
-    initials: 'JS',
-    candidateName: 'Jan Kowalski',
-    candidateEmail: 'jan.kowalski@gmail.com',
-    role: 'Senior IT Specialist',
-    company: 'Luminex Jobcontrol',
-    contractType: 'B2B',
-    status: 'SIGNED',
-    lastChange: '18 min temu',
-    recruiter: 'Anna Kowalska',
-  },
-  {
-    id: 2,
-    initials: 'AN',
-    candidateName: 'Anna Nowak',
-    candidateEmail: 'anna.nowak@outlook.com',
-    role: 'Product Designer',
-    company: 'Luminex & Finnco',
-    contractType: 'Umowa zlecenie',
-    status: 'OTP_VERIFIED',
-    lastChange: '2 godz. temu',
-    recruiter: 'Anna Kowalska',
-  },
-  {
-    id: 3,
-    initials: 'PW',
-    candidateName: 'Piotr Wiśniewski',
-    candidateEmail: 'p.wisniewski@gmail.com',
-    role: 'Dev-Ops Engineer',
-    company: 'Ametrix 82A',
-    contractType: 'B2B',
-    status: 'OPENED',
-    lastChange: '3 godz. temu',
-    recruiter: 'Tomasz Nowak',
-  },
-  {
-    id: 4,
-    initials: 'KW',
-    candidateName: 'Katarzyna Wójcik',
-    candidateEmail: 'k.wojcik@proton.me',
-    role: 'Marketing Lead',
-    company: 'Luminex Zasoby',
-    contractType: 'Umowa o pracę',
-    status: 'SENT',
-    lastChange: '3 godz. temu',
-    recruiter: 'Tomasz Nowak',
-  },
-  {
-    id: 5,
-    initials: 'TL',
-    candidateName: 'Tomasz Lewandowski',
-    candidateEmail: 't.lewandowski@mail.com',
-    role: 'Finance Analyst',
-    company: 'Luminex & Finnco',
-    contractType: 'Umowa zlecenie',
-    status: 'SIGNED',
-    lastChange: '19 godz. temu',
-    recruiter: 'Janusz Cygan',
-  },
-  {
-    id: 6,
-    initials: 'MZ',
-    candidateName: 'Magdalena Zielińska',
-    candidateEmail: 'm.zielinska@gmail.com',
-    role: 'Data Scientist',
-    company: 'Kurbet EST',
-    contractType: 'B2B',
-    status: 'OTP_VERIFIED',
-    lastChange: '21 godz. temu',
-    recruiter: 'Anna Kowalska',
-  },
-  {
-    id: 7,
-    initials: 'MS',
-    candidateName: 'Marek Szymański',
-    candidateEmail: 'marek.szymanski@wp.pl',
-    role: 'Sales Representative',
-    company: 'Luminex Advance',
-    contractType: 'Umowa o pracę',
-    status: 'SENT',
-    lastChange: '22 godz. temu',
-    recruiter: 'Janusz Cygan',
-  },
-]
-
-const initialAgencies: AgencyAccess[] = [
-  {
-    id: 1,
-    name: 'TalentBridge Sp. z o.o.',
-    nip: '521-19-84-832',
-    signatureLimit: 800,
-    usedSignatures: 184,
-    plan: 'Pro',
-    planValidUntil: 'Do 12.07.2026',
-    paymentStatus: 'paid',
-  },
-  {
-    id: 2,
-    name: 'HireWave Polska',
-    nip: '634-28-91-115',
-    signatureLimit: 200,
-    usedSignatures: 73,
-    plan: 'Biznes',
-    planValidUntil: 'Do 12.07.2026',
-    paymentStatus: 'paid',
-  },
-  {
-    id: 3,
-    name: 'NordStaff Group',
-    nip: '781-10-44-902',
-    signatureLimit: 20,
-    usedSignatures: 8,
-    plan: 'Start (Testowy)',
-    planValidUntil: 'Okres testowy (3 dni)',
-    paymentStatus: 'trial',
-  },
-]
-
-const initialInviteCodes: InviteCode[] = [
-  {
-    code: 'AETHER2026',
-    createdAt: 'kod testowy',
-    status: 'wykorzystany',
-    plan: 'Pro',
-    signatureLimit: 800,
-    usedBy: 'TalentBridge Sp. z o.o.',
-  },
-]
-
-const initialFeatureProposals: FeatureProposal[] = [
-  {
-    id: 1,
-    agencyName: 'TalentBridge Sp. z o.o.',
-    contactEmail: 'ops@talentbridge.pl',
-    featureName: 'Automatyczne przypomnienia SMS',
-    description: 'Chcemy wysyłać SMS do kandydatów, którzy otworzyli umowę, ale nie przeszli OTP.',
-    priority: 'Ważne (Ułatwi codzienne operacje)',
-    status: 'Nowe',
-    createdAt: 'dziś',
-  },
-  {
-    id: 2,
-    agencyName: 'HireWave Polska',
-    contactEmail: 'contact@hirewave.pl',
-    featureName: 'Integracja z WhatsApp',
-    description:
-      'Kandydaci na stanowiska liniowe rzadko sprawdzają skrzynki e-mail, przez co proces podpisania umowy się wydłuża. Chcemy wysyłać powiadomienia z linkiem OTP bezpośrednio na WhatsApp.',
-    priority: 'Krytyczne (Blokuje mój rozwój / Przejście z innego systemu)',
-    status: 'W realizacji',
-    createdAt: 'wczoraj',
-  },
-  {
-    id: 3,
-    agencyName: 'NordStaff Group',
-    contactEmail: 'hr@nordstaff.pl',
-    featureName: 'Ciemny motyw (Dark Mode) dla panelu rekrutera',
-    description:
-      'Wielu rekruterów pracuje do późnego wieczora. Jasny interfejs bardzo męczy wzrok przy wielogodzinnym przeglądaniu umów.',
-    priority: 'Miło mieć (Fajny dodatek)',
-    status: 'Zrobione',
-    createdAt: '3 dni temu',
-  },
-]
+const initialDocuments: DocumentRecord[] = []
+const initialAgencies: AgencyAccess[] = []
+const initialInviteCodes: InviteCode[] = []
+const initialFeatureProposals: FeatureProposal[] = []
 
 const superAdminEmails = ['admin@aether.pl', 'aetherflowbiznes@gmail.com']
 const AUTH_PROFILE_STORAGE_KEY = 'aether_flow_auth_profile'
@@ -318,6 +171,7 @@ interface StoredAuthProfile {
 
 interface LoginResponse {
   access_token: string
+  refresh_token: string
   token_type: string
   user: {
     id: string
@@ -369,9 +223,12 @@ function getAuthErrorMessage(error: unknown, fallback: string) {
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const storedAuthProfile = getAccessToken() ? readStoredAuthProfile() : null
+  const [authReady, setAuthReady] = useState(false)
   const [role, setRole] = useState<UserRole>(storedAuthProfile?.role ?? 'guest')
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(storedAuthProfile?.email ?? null)
+  const [organizationProfile, setOrganizationProfile] = useState<OrganizationProfile | null>(null)
   const [documents, setDocuments] = useState<DocumentRecord[]>(initialDocuments)
+  const candidateStatusRef = useRef<Map<string, DocumentStatus>>(new Map())
   const [agencies, setAgencies] = useState<AgencyAccess[]>(initialAgencies)
   const [inviteCodes, setInviteCodes] = useState<InviteCode[]>(initialInviteCodes)
   const [featureProposals, setFeatureProposals] = useState<FeatureProposal[]>(initialFeatureProposals)
@@ -381,6 +238,110 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => documents.filter((document) => !document.deleted),
     [documents],
   )
+
+  const clearAuthState = useCallback(() => {
+    clearAccessToken()
+    clearAuthProfile()
+    setRole('guest')
+    setCurrentUserEmail(null)
+    setOrganizationProfile(null)
+  }, [])
+
+  const syncAuthFromSession = useCallback(async (session: Session | null) => {
+    if (!session?.access_token) {
+      return false
+    }
+
+    const email = session.user.email?.trim() ?? ''
+
+    if (!email) {
+      return false
+    }
+
+    const normalizedEmail = email.toLowerCase()
+    setAccessToken(session.access_token)
+
+    if (superAdminEmails.includes(normalizedEmail)) {
+      const nextRole: UserRole = 'super_admin'
+      setRole(nextRole)
+      setCurrentUserEmail(email)
+      storeAuthProfile({ email, role: nextRole })
+      return true
+    }
+
+    try {
+      const testAuthResponse = await apiRequest<TestAuthResponse>('/api/v1/test-auth', {
+        auth: true,
+      })
+      const nextRole = resolveUserRole(email, testAuthResponse.user_details.role)
+
+      setRole(nextRole)
+      setCurrentUserEmail(email)
+      storeAuthProfile({ email, role: nextRole })
+
+      return true
+    } catch {
+      const storedProfile = readStoredAuthProfile()
+
+      if (storedProfile?.email.toLowerCase() === normalizedEmail) {
+        setRole(storedProfile.role)
+        setCurrentUserEmail(storedProfile.email)
+        return true
+      }
+
+      return false
+    }
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    const initializeAuth = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      if (!isMounted) {
+        return
+      }
+
+      if (session) {
+        await syncAuthFromSession(session)
+      } else if (!getAccessToken()) {
+        clearAuthState()
+      }
+
+      if (isMounted) {
+        setAuthReady(true)
+      }
+    }
+
+    void initializeAuth()
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!isMounted) {
+        return
+      }
+
+      if (event === 'SIGNED_OUT' || !session) {
+        if (event === 'SIGNED_OUT') {
+          clearAuthState()
+        }
+        return
+      }
+
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
+        await syncAuthFromSession(session)
+      }
+    })
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
+  }, [clearAuthState, syncAuthFromSession])
 
   const authenticateWithPassword = useCallback(async (email: string, password: string): Promise<AuthResult> => {
     const normalizedEmail = email.trim().toLowerCase()
@@ -395,10 +356,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       setAccessToken(loginResponse.access_token)
 
-      const testAuthResponse = await apiRequest<TestAuthResponse>('/api/v1/test-auth', {
-        auth: true,
-      })
-      const nextRole = resolveUserRole(loginResponse.user.email, testAuthResponse.user_details.role)
+      if (loginResponse.refresh_token) {
+        await supabase.auth.setSession({
+          access_token: loginResponse.access_token,
+          refresh_token: loginResponse.refresh_token,
+        })
+      }
+
+      const isSuperAdmin = superAdminEmails.includes(normalizedEmail)
+
+      if (!isSuperAdmin) {
+        const testAuthResponse = await apiRequest<TestAuthResponse>('/api/v1/test-auth', {
+          auth: true,
+        })
+        const nextRole = resolveUserRole(loginResponse.user.email, testAuthResponse.user_details.role)
+
+        setRole(nextRole)
+        setCurrentUserEmail(loginResponse.user.email)
+        storeAuthProfile({ email: loginResponse.user.email, role: nextRole })
+
+        return { ok: true, role: nextRole }
+      }
+
+      const nextRole = resolveUserRole(loginResponse.user.email)
 
       setRole(nextRole)
       setCurrentUserEmail(loginResponse.user.email)
@@ -406,22 +386,126 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       return { ok: true, role: nextRole }
     } catch (error) {
-      clearAccessToken()
-      clearAuthProfile()
-      setRole('guest')
-      setCurrentUserEmail(null)
+      clearAuthState()
+      void supabase.auth.signOut()
 
       return {
         ok: false,
         error: getAuthErrorMessage(error, 'Nie udało się zalogować. Sprawdź email i hasło.'),
       }
     }
+  }, [clearAuthState])
+
+  const fetchCandidates = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token ?? getAccessToken()
+
+    if (!token) {
+      return
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/v1/candidates`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      throw new ApiError(
+        `Nie udało się pobrać kandydatów (${response.status})`,
+        response.status,
+      )
+    }
+
+    const data = (await response.json()) as { candidates?: Parameters<typeof mapBackendCandidateToDocumentRecord>[0][] }
+    const recruiterLabel = currentUserEmail ?? '—'
+    const mappedCandidates = (data.candidates ?? []).map((candidate) =>
+      mapBackendCandidateToDocumentRecord(candidate, recruiterLabel),
+    )
+
+    for (const candidate of mappedCandidates) {
+      const previousStatus = candidateStatusRef.current.get(candidate.backendId)
+      candidateStatusRef.current.set(candidate.backendId, candidate.status)
+
+      if (
+        candidate.status === 'SIGNED' &&
+        previousStatus !== undefined &&
+        previousStatus !== 'SIGNED' &&
+        candidate.backendId
+      ) {
+        const filename = `filled_${candidate.role}.pdf`
+
+        void downloadSignedCandidateDocument(candidate.backendId, filename).catch((error) => {
+          console.error('Nie udało się automatycznie pobrać podpisanego dokumentu:', error)
+        })
+      }
+    }
+
+    setDocuments(mappedCandidates)
+  }, [currentUserEmail])
+
+  const deleteDocuments = useCallback(
+    async (documentIds: number[]) => {
+      const backendIds = documents
+        .filter((document) => documentIds.includes(document.id) && document.backendId)
+        .map((document) => document.backendId)
+
+      if (backendIds.length === 0) {
+        return
+      }
+
+      await deleteCandidatesRequest({ candidate_ids: backendIds })
+      await fetchCandidates()
+    },
+    [documents, fetchCandidates],
+  )
+
+  const deleteAllDocuments = useCallback(async () => {
+    await deleteCandidatesRequest({ delete_all: true })
+    await fetchCandidates()
+  }, [fetchCandidates])
+
+  const fetchOrganizationProfile = useCallback(async () => {
+    if (!getAccessToken()) {
+      setOrganizationProfile(null)
+      return
+    }
+
+    try {
+      const profile = await getOrganizationProfile()
+      setOrganizationProfile(profile)
+    } catch (error) {
+      console.error('Nie udało się pobrać profilu agencji:', error)
+      setOrganizationProfile(null)
+    }
   }, [])
+
+  useEffect(() => {
+    if (!authReady || role !== 'recruiter') {
+      if (role !== 'recruiter') {
+        setOrganizationProfile(null)
+      }
+      return
+    }
+
+    void fetchOrganizationProfile()
+  }, [authReady, fetchOrganizationProfile, role])
+
+  const user = useMemo<AuthUser | null>(
+    () => (currentUserEmail ? { email: currentUserEmail } : null),
+    [currentUserEmail],
+  )
+
+  const isAuthenticated = role !== 'guest'
 
   const value = useMemo<AppContextValue>(
     () => ({
       role,
+      user,
+      isAuthenticated,
+      authReady,
       currentUserEmail,
+      organizationProfile,
       documents,
       centralCandidatesList,
       agencies,
@@ -454,11 +538,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       },
       logout: () => {
-        clearAccessToken()
-        clearAuthProfile()
-        setRole('guest')
-        setCurrentUserEmail(null)
+        clearAuthState()
+        void supabase.auth.signOut()
+        setDocuments([])
       },
+      fetchCandidates,
+      fetchOrganizationProfile,
       addAgencyManually: (agency) => {
         const nextAgency: AgencyAccess = {
           ...agency,
@@ -473,12 +558,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       generateFormLink: (config) => {
         const slug =
           config.template === 'Umowa B2B (wersja 2026) + Załączniki'
-            ? 'talentbridge-umowa-b2b'
-            : 'talentbridge-umowa-zlecenie'
+            ? 'umowa-b2b'
+            : 'umowa-zlecenie'
         const nextLink: FormLinkConfig = {
           ...config,
           slug,
-          url: `aetherai.pl/f/${slug}`,
+          url: `aetherflow.pl/f/${slug}`,
         }
 
         setActiveFormLink(nextLink)
@@ -492,15 +577,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           activeFormLink?.template === 'Umowa B2B (wersja 2026) + Załączniki' ? 'B2B' : 'Umowa zlecenie'
         const nextDocument: DocumentRecord = {
           id: Math.max(0, ...documents.map((currentDocument) => currentDocument.id)) + 1,
+          backendId: '',
           initials,
           candidateName,
           candidateEmail: data.email.trim(),
           role: 'Formularz rekrutacyjny',
-          company: 'TalentBridge Sp. z o.o.',
+          company: '',
           contractType,
           status: 'DATA_COMPLETED',
           lastChange: 'przed chwilą',
-          recruiter: 'Anna Kowalska',
+          recruiter: currentUserEmail ?? '—',
         }
 
         setDocuments((currentDocuments) => [nextDocument, ...currentDocuments])
@@ -516,13 +602,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ),
         )
       },
-      softDeleteDocument: (documentId) => {
-        setDocuments((currentDocuments) =>
-          currentDocuments.map((document) =>
-            document.id === documentId ? { ...document, deleted: true } : document,
-          ),
-        )
-      },
+      deleteDocuments,
+      deleteAllDocuments,
       updateAgencySignatureLimit: (agencyId, signatureLimit) => {
         setAgencies((currentAgencies) =>
           currentAgencies.map((agency) =>
@@ -597,13 +678,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       activeFormLink,
       agencies,
+      authReady,
       authenticateWithPassword,
       centralCandidatesList,
       currentUserEmail,
+      deleteAllDocuments,
+      deleteDocuments,
       documents,
       featureProposals,
+      fetchCandidates,
+      fetchOrganizationProfile,
       inviteCodes,
+      isAuthenticated,
+      organizationProfile,
       role,
+      user,
     ],
   )
 

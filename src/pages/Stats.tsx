@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { BarChart3, Clock3, TrendingUp, Users } from 'lucide-react'
+import { EmptyState } from '../components/EmptyState'
 import { Header } from '../components/Header'
 import { useAppContext } from '../context/AppContext'
 import {
@@ -126,11 +127,12 @@ export function Stats() {
           </thead>
           <tbody>
             {recruiterRows.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="analytics-empty-row">
-                  Brak przypisanych kandydatów. Tabela zaktualizuje się po dodaniu rekordów do lejka.
-                </td>
-              </tr>
+              <EmptyState
+                variant="table"
+                colSpan={5}
+                message="Brak danych o rekruterach"
+                description="Tabela zaktualizuje się po dodaniu rekordów do lejka."
+              />
             ) : (
               recruiterRows.map((recruiter) => (
                 <tr key={recruiter.name}>

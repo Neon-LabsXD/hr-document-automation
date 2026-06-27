@@ -2,10 +2,12 @@ import {
   BarChart3,
   Building2,
   ChevronDown,
+  CreditCard,
   FileText,
   Home,
   KeyRound,
   Lightbulb,
+  LogOut,
   Settings,
   Sparkles,
   Users,
@@ -13,6 +15,7 @@ import {
 } from 'lucide-react'
 import { useAppContext } from '../context/AppContext'
 import type { AppPage } from '../types'
+import { getSignedCount } from '../utils/candidateAnalytics'
 
 interface NavigationItem {
   label: string
@@ -30,6 +33,7 @@ const navigationItems: NavigationItem[] = [
   { label: 'Dokumenty', page: 'documents', icon: FileText },
   { label: 'Statystyki', page: 'stats', icon: BarChart3 },
   { label: 'Kandydaci', page: 'candidates', icon: Users },
+  { label: 'Plany i cennik', page: 'pricing', icon: CreditCard },
   { label: 'Ustawienia agencji', page: 'settings', icon: Settings },
   { label: 'Zaproponuj funkcję', page: 'offer', icon: Lightbulb },
 ]
@@ -41,13 +45,29 @@ const superAdminNavigationItems: NavigationItem[] = [
 ]
 
 export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
-  const { centralCandidatesList, currentUserEmail, role } = useAppContext()
+  const { centralCandidatesList, currentUserEmail, logout, organizationProfile, role } = useAppContext()
   const visibleNavigationItems = role === 'super_admin' ? superAdminNavigationItems : navigationItems
-  const companyName = role === 'super_admin' ? 'Aether Flow Admin' : 'TalentBridge Sp. z o.o.'
-  const companySubtitle = role === 'super_admin' ? 'SUPER ADMIN' : 'NIP: 521-19-84-832'
-  const signatureLimit = 800
-  const usedSignatures = centralCandidatesList.length * 10
-  const usagePercent = Math.min((usedSignatures / signatureLimit) * 100, 100)
+  const companyName =
+    role === 'super_admin'
+      ? 'Aether Flow Admin'
+      : organizationProfile?.name?.trim() || 'Twoja agencja'
+  const companySubtitle =
+    role === 'super_admin' ? 'SUPER ADMIN' : organizationProfile?.nip?.trim() || '—'
+  const signatureLimit = organizationProfile?.signatures_limit ?? 20
+  const usedSignatures = getSignedCount(centralCandidatesList)
+  const usagePercent = signatureLimit > 0 ? Math.min((usedSignatures / signatureLimit) * 100, 100) : 0
+  const profileInitials = currentUserEmail
+    ? currentUserEmail
+        .split('@')[0]
+        .slice(0, 2)
+        .toUpperCase()
+    : '—'
+  const profileName = currentUserEmail?.split('@')[0] ?? 'Użytkownik'
+
+  const handleLogout = () => {
+    logout()
+    onNavigate('landing')
+  }
 
   return (
     <aside className="sidebar">
@@ -89,6 +109,11 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         })}
       </nav>
 
+      <button className="sidebar-logout-button" type="button" onClick={handleLogout}>
+        <LogOut />
+        Wyloguj się
+      </button>
+
       <div className="sidebar-footer">
         {role !== 'super_admin' && (
           <div className="usage-card">
@@ -105,9 +130,9 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         )}
 
         <div className="profile-card">
-          <div className="profile-avatar">{role === 'super_admin' ? 'SA' : 'AM'}</div>
+          <div className="profile-avatar">{role === 'super_admin' ? 'SA' : profileInitials}</div>
           <div className="profile-copy">
-            <p>{role === 'super_admin' ? 'Super Admin' : 'Andrii Matyniuk'}</p>
+            <p>{role === 'super_admin' ? 'Super Admin' : profileName}</p>
             <span>{currentUserEmail ?? 'Administrator'}</span>
           </div>
         </div>

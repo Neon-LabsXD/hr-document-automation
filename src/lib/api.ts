@@ -87,11 +87,20 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     }
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    body: requestBody,
-    headers: requestHeaders,
-  })
+  let response: Response
+
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      body: requestBody,
+      headers: requestHeaders,
+    })
+  } catch {
+    throw new ApiError(
+      'Serwer API jest niedostępny. Uruchom backend poleceniem: npm run dev-backend',
+      0,
+    )
+  }
 
   if (!response.ok) {
     const details = await parseErrorResponse(response)

@@ -1,5 +1,6 @@
 import { MoreHorizontal, Lightbulb } from 'lucide-react'
 import { useState } from 'react'
+import { EmptyState } from '../components/EmptyState'
 import { Header } from '../components/Header'
 import { useAppContext, type BusinessPriority, type FeatureRequestStatus } from '../context/AppContext'
 
@@ -48,7 +49,13 @@ export function AdminFeatureRequests() {
       </section>
 
       <div className="feature-request-list">
-        {featureProposals.map((proposal) => (
+        {featureProposals.length === 0 ? (
+          <EmptyState
+            message="Brak zgłoszeń funkcji"
+            description="Nowe propozycje od agencji pojawią się tutaj automatycznie."
+          />
+        ) : (
+          featureProposals.map((proposal) => (
           <article key={proposal.id} className="feature-request-card">
             <div>
               <div className="feature-badge-row">
@@ -86,7 +93,8 @@ export function AdminFeatureRequests() {
               </div>
             </footer>
           </article>
-        ))}
+        ))
+        )}
       </div>
     </>
   )

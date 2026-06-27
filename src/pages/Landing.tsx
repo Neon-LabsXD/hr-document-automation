@@ -16,7 +16,8 @@ import { AuthModal } from '../components/AuthModal'
 import { FAQSection } from '../components/FAQSection'
 import { Footer } from '../components/Footer'
 import { LandingNav } from '../components/LandingNav'
-import type { UserRole } from '../context/AppContext'
+import { useAppContext, type UserRole } from '../context/AppContext'
+import { pricingPlans } from '../data/pricingPlans'
 import type { AppPage } from '../types'
 
 interface FunnelStep {
@@ -36,17 +37,6 @@ interface SecurityFeature {
   title: string
   description: string
   icon: LucideIcon
-}
-
-interface PricingPlan {
-  name: string
-  limit: string
-  price: string
-  oldPrice?: string
-  priceNote?: string
-  description: string
-  highlighted?: boolean
-  features: string[]
 }
 
 interface LandingProps {
@@ -116,44 +106,48 @@ const securityFeatures: SecurityFeature[] = [
   },
 ]
 
-const pricingPlans: PricingPlan[] = [
-  {
-    name: 'Start (Testowy)',
-    limit: 'do 20 podpisów / miesiąc',
-    price: '0 PLN',
-    description: 'Dla agencji, które chcą bez ryzyka przetestować pierwszy proces podpisu.',
-    features: ['Panel statusów dokumentów', 'Weryfikacja OTP', 'Podstawowa historia audytu'],
-  },
-  {
-    name: 'Biznes',
-    limit: 'do 200 podpisów / miesiąc',
-    price: '199 PLN',
-    oldPrice: '399 PLN',
-    priceNote: '*Cena gwarantowana na zawsze dla pierwszych klientów',
-    description: 'Najlepszy wybór dla zespołów rekrutacyjnych z codziennym obiegiem dokumentów.',
-    highlighted: true,
-    features: ['Multi-tenancy dla agencji', 'Automatyczne przypomnienia', 'Priorytetowe wsparcie'],
-  },
-  {
-    name: 'Pro',
-    limit: 'do 800 podpisów / miesiąc',
-    price: '499 PLN',
-    oldPrice: '899 PLN',
-    description: 'Dla większych agencji i zespołów, które potrzebują pełnej kontroli nad skalą.',
-    features: ['Limit 800 podpisów', 'Dedykowane środowisko', 'Zaawansowane SLA'],
-  },
-]
-
 export function Landing({ onNavigate }: LandingProps) {
+  const { isAuthenticated, role } = useAppContext()
   const [authModalOpen, setAuthModalOpen] = useState(false)
+  const [redirectAfterAuth, setRedirectAfterAuth] = useState<AppPage | null>(null)
 
-  const handleAuthenticated = (role: UserRole) => {
+  const handleAuthenticated = (nextRole: UserRole) => {
+    if (redirectAfterAuth && nextRole !== 'super_admin') {
+      onNavigate?.(redirectAfterAuth)
+      setRedirectAfterAuth(null)
+      return
+    }
+
+    onNavigate?.(nextRole === 'super_admin' ? 'admin-agencies' : 'dashboard')
+    setRedirectAfterAuth(null)
+  }
+
+  const handlePlanSelect = () => {
+    if (isAuthenticated) {
+      onNavigate?.(role === 'super_admin' ? 'admin-agencies' : 'pricing')
+      return
+    }
+
+    setRedirectAfterAuth('pricing')
+    setAuthModalOpen(true)
+  }
+
+  const goToDashboard = () => {
     onNavigate?.(role === 'super_admin' ? 'admin-agencies' : 'dashboard')
+  }
+
+  const openAuthModal = () => {
+    if (isAuthenticated) {
+      goToDashboard()
+      return
+    }
+
+    setAuthModalOpen(true)
   }
 
   return (
     <main className="landing-page">
-      <LandingNav onNavigate={onNavigate} onAuthOpen={() => setAuthModalOpen(true)} />
+      <LandingNav onNavigate={onNavigate} onAuthOpen={openAuthModal} />
 
       <section id="hero" className="hero-section">
         <div className="hero-copy">
@@ -164,10 +158,17 @@ export function Landing({ onNavigate }: LandingProps) {
             rzeczywistym i otrzymuj prawnie wiążący podpis w minuty, a nie dni.
           </p>
           <div className="hero-actions">
-            <button className="primary-button" type="button" onClick={() => setAuthModalOpen(true)}>
-              Zaloguj się
-              <ArrowRight />
-            </button>
+            {isAuthenticated ? (
+              <button className="primary-button" type="button" onClick={goToDashboard}>
+                Przejdź do pulpitu
+                <ArrowRight />
+              </button>
+            ) : (
+              <button className="primary-button" type="button" onClick={openAuthModal}>
+                Zaloguj się
+                <ArrowRight />
+              </button>
+            )}
             <a className="secondary-button" href="#demo">
               Zobacz proces podpisu
             </a>
@@ -306,7 +307,9 @@ export function Landing({ onNavigate }: LandingProps) {
                   </li>
                 ))}
               </ul>
-              <a href="#rejestracja">{plan.highlighted ? 'Uruchom Biznes' : 'Wybierz plan'}</a>
+              <button type="button" onClick={handlePlanSelect}>
+                {plan.ctaLabel}
+              </button>
             </article>
           ))}
         </div>
@@ -320,24 +323,30 @@ export function Landing({ onNavigate }: LandingProps) {
           <p className="eyebrow">Dostęp invite-only</p>
           <h2>Platforma jest dostępna wyłącznie dla zaproszonych agencji.</h2>
           <p>
-            Jeśli posiadasz kod zaproszenia, otwórz panel logowania i przejdź do rejestracji
-            agencji. Kod testowy dla środowiska developerskiego: AETHER2026.
+            Jeśli posiadasz kod zaproszenia, otwórz panel logowania i przejdź do rejestracji agencji.
           </p>
         </div>
         <div className="signup-form invite-only-card">
           <strong>Zamknięty dostęp B2B</strong>
           <span>Logowanie dla klientów i panel właściciela znajdują się w jednym bezpiecznym oknie.</span>
-          <button type="button" onClick={() => setAuthModalOpen(true)}>
-            Zaloguj się / zarejestruj agencję
-            <ArrowRight />
-          </button>
+          {isAuthenticated ? (
+            <button type="button" onClick={goToDashboard}>
+              Przejdź do pulpitu
+              <ArrowRight />
+            </button>
+          ) : (
+            <button type="button" onClick={openAuthModal}>
+              Zaloguj się / zarejestruj agencję
+              <ArrowRight />
+            </button>
+          )}
         </div>
       </section>
 
       <Footer />
 
       <AuthModal
-        isOpen={authModalOpen}
+        isOpen={authModalOpen && !isAuthenticated}
         onClose={() => setAuthModalOpen(false)}
         onAuthenticated={handleAuthenticated}
       />

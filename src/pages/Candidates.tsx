@@ -1,4 +1,5 @@
 import { Mail, Users } from 'lucide-react'
+import { EmptyState } from '../components/EmptyState'
 import { Header } from '../components/Header'
 import { useAppContext } from '../context/AppContext'
 
@@ -27,10 +28,10 @@ export function Candidates() {
       </section>
 
       {centralCandidatesList.length === 0 ? (
-        <section className="dashboard-empty-state">
-          <h2>Brak kandydatów do wyświetlenia</h2>
-          <p>Usunięci kandydaci znikają również z tej listy w czasie rzeczywistym.</p>
-        </section>
+        <EmptyState
+          message="Brak kandydatów do wyświetlenia"
+          description="Usunięci kandydaci znikają również z tej listy w czasie rzeczywistym."
+        />
       ) : (
         <div className="candidate-grid">
           {centralCandidatesList.map((document) => (

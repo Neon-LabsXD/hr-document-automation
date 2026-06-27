@@ -1,9 +1,14 @@
+import hashlib
+import hmac
+import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
+from app.core.config import settings
 from app.core.database import supabase
 
 logger = logging.getLogger("app")
@@ -13,6 +18,61 @@ router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 SIGNED_CANDIDATE_STATUS = "signed"
 SIGNED_DOCUMENT_STATUS = "signed"
 COMPLETED_SUBMISSION_EVENTS = {"submission.completed", "form.completed"}
+
+# DocuSeal допускает рассинхрон часов в пределах 5 минут.
+WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300
+
+
+def _verify_docuseal_signature(raw_body: bytes, signature_header: str | None) -> None:
+    """
+    Проверяет подпись DocuSeal вебхука.
+
+    Формат заголовка X-Docuseal-Signature: "<unix_timestamp>.<hex_signature>".
+    Подпись = HMAC-SHA256(secret, "<unix_timestamp>." + raw_body).
+    Сравнение — constant-time. Допустимый сдвиг времени — 5 минут.
+    """
+    secret = (settings.DOCUSEAL_WEBHOOK_SECRET or "").strip()
+
+    if not secret:
+        logger.error("DOCUSEAL_WEBHOOK_SECRET is not configured; rejecting webhook.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Webhook signing secret is not configured.",
+        )
+
+    if not signature_header or "." not in signature_header:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or malformed signature header.",
+        )
+
+    timestamp_str, signature = signature_header.split(".", 1)
+
+    try:
+        timestamp_value = int(timestamp_str)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid signature timestamp.",
+        ) from exc
+
+    if abs(time.time() - timestamp_value) > WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Webhook timestamp outside tolerance window.",
+        )
+
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        f"{timestamp_str}.".encode("utf-8") + raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(expected_signature, signature):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Webhook signature mismatch.",
+        )
 
 
 def _extract_submission_id(data: dict[str, Any]) -> str | None:
@@ -25,69 +85,44 @@ def _extract_submission_status(data: dict[str, Any]) -> str | None:
     return str(status_value).lower() if status_value is not None else None
 
 
-def _extract_candidate_email(data: dict[str, Any]) -> str | None:
-    submitters = data.get("submitters") or []
+def _find_candidate_id(submission_id: str | None) -> str | None:
+    """
+    Ищем кандидата ТОЛЬКО по docuseal submission_id. Email-fallback убран —
+    он позволял cross-tenant IDOR (поддельный вебхук с email жертвы мог пометить
+    чужого кандидата подписавшим).
+    """
+    if not submission_id:
+        return None
 
-    for submitter in submitters:
-        if not isinstance(submitter, dict):
-            continue
+    candidate_res = (
+        supabase.table("candidates")
+        .select("id")
+        .eq("docuseal_id", submission_id)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
 
-        email = submitter.get("email")
-        if email:
-            return str(email).strip().lower()
-
-    email = data.get("email")
-    if email:
-        return str(email).strip().lower()
-
-    return None
-
-
-def _find_candidate_id(submission_id: str | None, candidate_email: str | None) -> str | None:
-    if submission_id:
-        candidate_res = (
-            supabase.table("candidates")
-            .select("id")
-            .eq("docuseal_id", submission_id)
-            .is_("deleted_at", "null")
-            .limit(1)
-            .execute()
-        )
-        if candidate_res.data:
-            return str(candidate_res.data[0]["id"])
-
-    if candidate_email:
-        candidate_res = (
-            supabase.table("candidates")
-            .select("id")
-            .eq("email", candidate_email)
-            .is_("deleted_at", "null")
-            .order("updated_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if candidate_res.data:
-            return str(candidate_res.data[0]["id"])
+    if candidate_res.data:
+        return str(candidate_res.data[0]["id"])
 
     return None
 
 
 def _mark_contract_signed(
     submission_id: str | None,
-    candidate_email: str | None,
     submission_status: str | None,
 ) -> dict[str, str]:
     if submission_status and submission_status not in {"completed", "complete"}:
         return {"status": "ignored", "reason": "submission_not_completed"}
 
     current_time = datetime.now(timezone.utc).isoformat()
-    candidate_id = _find_candidate_id(submission_id, candidate_email)
+    candidate_id = _find_candidate_id(submission_id)
 
     if not candidate_id:
         logger.warning(
-            "DocuSeal webhook: кандидат не найден (submission_id=%s, email=%s)",
+            "DocuSeal webhook: candidate not found (submission_id=%s)",
             submission_id,
-            candidate_email,
         )
         return {"status": "ignored", "reason": "candidate_not_found"}
 
@@ -104,27 +139,36 @@ def _mark_contract_signed(
             }).eq("docuseal_id", submission_id).execute()
 
         logger.info(
-            "Договор подписан: candidate_id=%s, submission_id=%s, email=%s",
+            "Contract signed: candidate_id=%s, submission_id=%s",
             candidate_id,
             submission_id,
-            candidate_email,
         )
-    except Exception as db_err:
-        logger.error("Ошибка при обновлении Supabase после webhook DocuSeal: %s", db_err)
+    except Exception:
+        logger.exception("Failed to update Supabase after DocuSeal webhook.")
 
     return {"status": "processed", "candidate_id": candidate_id}
 
 
 @router.post("/docuseal", status_code=status.HTTP_200_OK)
-async def handle_docuseal_webhook(request: Request):
+async def handle_docuseal_webhook(
+    request: Request,
+    x_docuseal_signature: str | None = Header(default=None, alias="X-Docuseal-Signature"),
+):
     """
-    Принимает уведомления от DocuSeal о статусе подписания документов.
+    Принимает уведомления от DocuSeal. Каждый запрос обязательно
+    подписан DocuSeal'ом через HMAC-SHA256 (X-Docuseal-Signature).
     """
+    raw_body = await request.body()
+    _verify_docuseal_signature(raw_body, x_docuseal_signature)
+
     try:
-        payload = await request.json()
+        payload = json.loads(raw_body.decode("utf-8"))
     except Exception as exc:
-        logger.error("Критическая ошибка парсинга вебхука DocuSeal: %s", exc)
+        logger.warning("DocuSeal webhook payload is not valid JSON.")
         raise HTTPException(status_code=400, detail="Invalid payload") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
 
     event_type = payload.get("event_type")
     data = payload.get("data", {})
@@ -132,13 +176,12 @@ async def handle_docuseal_webhook(request: Request):
     if not isinstance(data, dict):
         data = {}
 
-    logger.info("Получен webhook от DocuSeal. Событие: %s", event_type)
+    logger.info("DocuSeal webhook (verified). event=%s", event_type)
 
     if event_type in COMPLETED_SUBMISSION_EVENTS:
-        submission_id = _extract_submission_id(data)
-        candidate_email = _extract_candidate_email(data)
-        submission_status = _extract_submission_status(data)
-
-        return _mark_contract_signed(submission_id, candidate_email, submission_status)
+        return _mark_contract_signed(
+            _extract_submission_id(data),
+            _extract_submission_status(data),
+        )
 
     return {"status": "ignored", "event": event_type}

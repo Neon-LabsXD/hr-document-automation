@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List
+from typing import List, Literal
 
 from pydantic import EmailStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Aether Flow Бэкенд"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
-    
+
+    # Окружение: development | staging | production.
+    # В production CORS НЕ включает localhost.
+    ENVIRONMENT: Literal["development", "staging", "production"] = "development"
+
     # Настройки CORS (будут подтягиваться из .env)
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000"]
     
@@ -34,11 +38,25 @@ class Settings(BaseSettings):
     DOCUSEAL_API_URL: str = "https://docuseal.eu/api"
     DOCUSEAL_API_KEY: str = ""
     DOCUSEAL_USER_EMAIL: str = ""
+    # whsec_... из дашборда DocuSeal (Webhooks → Security → HMAC).
+    # Без него webhook-эндпоинт будет отклонять ВСЕ запросы — это by design.
+    DOCUSEAL_WEBHOOK_SECRET: str = ""
+
+    # Конфигурация SMSAPI.pl
+    SMSAPI_OAUTH_TOKEN: str | None = None
+    SMSAPI_FROM_NAME: str = "Test"
+
+    # Серверный секрет для HMAC хеширования OTP-кодов кандидатов
+    # (отдельный от Supabase JWT). Любая длинная случайная строка.
+    OTP_HMAC_SECRET: str = ""
 
     @field_validator(
         "DOCUSEAL_API_KEY",
         "DOCUSEAL_API_URL",
         "DOCUSEAL_USER_EMAIL",
+        "DOCUSEAL_WEBHOOK_SECRET",
+        "SMSAPI_OAUTH_TOKEN",
+        "OTP_HMAC_SECRET",
         mode="before",
     )
     @classmethod

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -5,11 +7,22 @@ from app.api.deps import get_current_user
 from app.core.database import supabase
 from app.schemas.auth import CurrentUser
 
+logger = logging.getLogger("app.organizations")
+
 router = APIRouter()
 
 PROFILE_FIELDS_BASE = "name, nip, address"
 PROFILE_FIELDS_WITH_PHONE = f"{PROFILE_FIELDS_BASE}, phone"
+SUBSCRIPTION_FIELDS = f"{PROFILE_FIELDS_BASE}, subscription_plan, signatures_limit"
+SUBSCRIPTION_FIELDS_WITH_PHONE = f"{SUBSCRIPTION_FIELDS}, phone"
 _phone_column_available: bool | None = None
+_subscription_columns_available: bool | None = None
+
+PLAN_CATALOG: dict[str, dict[str, object]] = {
+    "start": {"name": "Start (Testowy)", "signatures_limit": 20},
+    "biznes": {"name": "Biznes", "signatures_limit": 200},
+    "pro": {"name": "Pro", "signatures_limit": 800},
+}
 
 
 class OrganizationProfileResponse(BaseModel):
@@ -17,6 +30,14 @@ class OrganizationProfileResponse(BaseModel):
     nip: str
     address: str
     phone: str
+    subscription_plan: str = "Start (Testowy)"
+    signatures_limit: int = 20
+
+
+class OrganizationSubscriptionResponse(BaseModel):
+    plan_id: str
+    plan_name: str
+    signatures_limit: int
 
 
 class UpdateOrganizationProfileRequest(BaseModel):
@@ -25,6 +46,9 @@ class UpdateOrganizationProfileRequest(BaseModel):
     address: str = ""
     phone: str = ""
 
+
+class UpdateOrganizationSubscriptionRequest(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=32)
 
 def _organization_supports_phone() -> bool:
     global _phone_column_available
@@ -41,17 +65,56 @@ def _organization_supports_phone() -> bool:
     return _phone_column_available
 
 
+def _organization_supports_subscription_fields() -> bool:
+    global _subscription_columns_available
+
+    if _subscription_columns_available is not None:
+        return _subscription_columns_available
+
+    try:
+        supabase.table("organizations").select("subscription_plan, signatures_limit").limit(1).execute()
+        _subscription_columns_available = True
+    except Exception:
+        _subscription_columns_available = False
+
+    return _subscription_columns_available
+
+
+def _resolve_plan_id(plan_name: str | None) -> str:
+    normalized = (plan_name or "").strip().lower()
+
+    if "pro" in normalized:
+        return "pro"
+
+    if "biznes" in normalized or "business" in normalized:
+        return "biznes"
+
+    return "start"
+
+
 def _serialize_organization_profile(organization: dict) -> OrganizationProfileResponse:
+    plan_name = str(organization.get("subscription_plan") or "Start (Testowy)")
+    signatures_limit = organization.get("signatures_limit")
+
     return OrganizationProfileResponse(
         name=organization.get("name") or "",
         nip=organization.get("nip") or "",
         address=organization.get("address") or "",
         phone=organization.get("phone") or "",
+        subscription_plan=plan_name,
+        signatures_limit=int(signatures_limit) if signatures_limit is not None else 20,
     )
 
 
 def _fetch_organization_profile(organization_id: str) -> dict:
-    fields = PROFILE_FIELDS_WITH_PHONE if _organization_supports_phone() else PROFILE_FIELDS_BASE
+    if _organization_supports_phone() and _organization_supports_subscription_fields():
+        fields = SUBSCRIPTION_FIELDS_WITH_PHONE
+    elif _organization_supports_subscription_fields():
+        fields = SUBSCRIPTION_FIELDS
+    elif _organization_supports_phone():
+        fields = PROFILE_FIELDS_WITH_PHONE
+    else:
+        fields = PROFILE_FIELDS_BASE
 
     organization_res = (
         supabase.table("organizations")
@@ -78,9 +141,10 @@ async def get_organization_profile(current_user: CurrentUser = Depends(get_curre
     except HTTPException:
         raise
     except Exception as exc:
+        logger.exception("Failed to load organization profile.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось получить профиль агентства. Ошибка: {str(exc)}",
+            detail="Не удалось получить профиль агентства.",
         ) from exc
 
     return _serialize_organization_profile(organization)
@@ -101,33 +165,96 @@ async def update_organization_profile(
     if _organization_supports_phone():
         update_payload["phone"] = payload.phone.strip()
 
-    select_fields = PROFILE_FIELDS_WITH_PHONE if _organization_supports_phone() else PROFILE_FIELDS_BASE
-
     try:
-        organization_res = (
-            supabase.table("organizations")
-            .update(update_payload)
-            .eq("id", organization_id)
-            .is_("deleted_at", "null")
-            .select(select_fields)
-            .single()
-            .execute()
-        )
+        supabase.table("organizations").update(update_payload).eq(
+            "id", organization_id
+        ).is_("deleted_at", "null").execute()
     except Exception as exc:
+        logger.exception("Failed to update organization profile.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось сохранить профиль агентства. Ошибка: {str(exc)}",
+            detail="Не удалось сохранить профиль агентства.",
         ) from exc
 
-    if not organization_res.data:
+    try:
+        organization = _fetch_organization_profile(organization_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to reload organization profile after update.")
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Организация не найдена.",
-        )
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Не удалось получить обновлённый профиль агентства.",
+        ) from exc
 
-    profile = _serialize_organization_profile(organization_res.data)
+    profile = _serialize_organization_profile(organization)
 
     if not _organization_supports_phone() and payload.phone.strip():
         profile.phone = payload.phone.strip()
 
     return profile
+
+
+@router.get("/subscription", response_model=OrganizationSubscriptionResponse)
+async def get_organization_subscription(current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        organization = _fetch_organization_profile(str(current_user.organization_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to load organization subscription.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Nie udało się pobrać planu subskrypcji.",
+        ) from exc
+
+    profile = _serialize_organization_profile(organization)
+    plan_id = _resolve_plan_id(profile.subscription_plan)
+    catalog_plan = PLAN_CATALOG[plan_id]
+
+    return OrganizationSubscriptionResponse(
+        plan_id=plan_id,
+        plan_name=str(catalog_plan["name"]),
+        signatures_limit=profile.signatures_limit,
+    )
+
+
+@router.patch("/subscription", response_model=OrganizationSubscriptionResponse)
+async def update_organization_subscription(
+    payload: UpdateOrganizationSubscriptionRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    plan_id = payload.plan_id.strip().lower()
+    catalog_plan = PLAN_CATALOG.get(plan_id)
+
+    if not catalog_plan:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nieprawidłowy plan subskrypcji.",
+        )
+
+    if not _organization_supports_subscription_fields():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Baza danych nie obsługuje jeszcze pól subskrypcji organizacji.",
+        )
+
+    organization_id = str(current_user.organization_id)
+
+    try:
+        supabase.table("organizations").update({
+            "subscription_plan": catalog_plan["name"],
+            "signatures_limit": catalog_plan["signatures_limit"],
+        }).eq("id", organization_id).is_("deleted_at", "null").execute()
+    except Exception as exc:
+        logger.exception("Failed to update organization subscription.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Nie udało się zaktualizować planu subskrypcji.",
+        ) from exc
+
+    return OrganizationSubscriptionResponse(
+        plan_id=plan_id,
+        plan_name=str(catalog_plan["name"]),
+        signatures_limit=int(catalog_plan["signatures_limit"]),
+    )

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bell, CheckCircle2, MailCheck, MoreHorizontal, Send, ShieldCheck, Trash2, Upload, type LucideIcon } from 'lucide-react'
+import { Bell, CheckCircle2, Download, MailCheck, MoreHorizontal, Send, ShieldCheck, Trash2, type LucideIcon } from 'lucide-react'
 import { DocumentDrawer } from './DocumentDrawer'
+import { EmptyState } from './EmptyState'
 import { useAppContext, type DocumentRecord, type DocumentStatus } from '../context/AppContext'
+import { downloadSignedCandidateDocument } from '../lib/backend'
 
 interface FunnelStage {
   label: string
@@ -69,12 +71,25 @@ function getStageClass(document: DocumentRecord, stage: FunnelStage) {
 }
 
 export function FunnelTable() {
-  const { centralCandidatesList, softDeleteDocument, updateDocumentStatus } = useAppContext()
+  const { centralCandidatesList, deleteDocuments, deleteAllDocuments, updateDocumentStatus } = useAppContext()
   const [statusFilter, setStatusFilter] = useState<DocumentStatus | 'ALL'>('ALL')
-  const [contractTypeFilter, setContractTypeFilter] = useState<DocumentRecord['contractType'] | 'ALL'>('ALL')
+  const [contractTypeFilter, setContractTypeFilter] = useState<string>('ALL')
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<number[]>([])
   const [drawerDocument, setDrawerDocument] = useState<DocumentRecord | null>(null)
   const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [downloadingDocumentId, setDownloadingDocumentId] = useState<number | null>(null)
+  const contractTypeOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          centralCandidatesList
+            .map((document) => document.contractType.trim())
+            .filter((contractType) => contractType.length > 0),
+        ),
+      ).sort((left, right) => left.localeCompare(right, 'pl')),
+    [centralCandidatesList],
+  )
   const visibleDocuments = useMemo(
     () =>
       centralCandidatesList.filter((document) => {
@@ -92,6 +107,13 @@ export function FunnelTable() {
   )
   const allVisibleSelected =
     visibleDocuments.length > 0 && visibleDocuments.every((document) => selectedDocumentIds.includes(document.id))
+  const selectedCount = selectedDocumentIds.length
+
+  useEffect(() => {
+    setSelectedDocumentIds((currentIds) =>
+      currentIds.filter((documentId) => centralCandidatesList.some((document) => document.id === documentId)),
+    )
+  }, [centralCandidatesList])
 
   useEffect(() => {
     if (openActionMenuId === null) {
@@ -134,10 +156,100 @@ export function FunnelTable() {
     )
   }
 
-  const deleteDocument = (documentId: number) => {
-    softDeleteDocument(documentId)
-    setOpenActionMenuId(null)
-    setSelectedDocumentIds((currentIds) => currentIds.filter((selectedId) => selectedId !== documentId))
+  const deleteDocument = async (documentId: number) => {
+    const confirmed = window.confirm('Czy na pewno chcesz usunąć tego kandydata?')
+
+    if (!confirmed) {
+      return
+    }
+
+    setIsDeleting(true)
+
+    try {
+      await deleteDocuments([documentId])
+      setOpenActionMenuId(null)
+      setSelectedDocumentIds((currentIds) => currentIds.filter((selectedId) => selectedId !== documentId))
+    } catch (error) {
+      console.error('Nie udało się usunąć kandydata:', error)
+      window.alert('Nie udało się usunąć kandydata. Spróbuj ponownie.')
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
+  const deleteSelectedDocuments = async () => {
+    const idsToDelete = centralCandidatesList
+      .filter((document) => selectedDocumentIds.includes(document.id))
+      .map((document) => document.id)
+
+    if (idsToDelete.length === 0) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Czy na pewno chcesz usunąć ${idsToDelete.length} zaznaczonych kandydatów?`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setIsDeleting(true)
+
+    try {
+      await deleteDocuments(idsToDelete)
+      setSelectedDocumentIds([])
+    } catch (error) {
+      console.error('Nie udało się usunąć zaznaczonych kandydatów:', error)
+      window.alert('Nie udało się usunąć zaznaczonych kandydatów. Spróbuj ponownie.')
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
+  const deleteAllVisibleDocuments = async () => {
+    if (centralCandidatesList.length === 0) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Czy na pewno chcesz usunąć wszystkich ${centralCandidatesList.length} kandydatów? Tej operacji nie można cofnąć.`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setIsDeleting(true)
+
+    try {
+      await deleteAllDocuments()
+      setSelectedDocumentIds([])
+    } catch (error) {
+      console.error('Nie udało się usunąć wszystkich kandydatów:', error)
+      window.alert('Nie udało się usunąć wszystkich kandydatów. Spróbuj ponownie.')
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
+  const downloadDocument = async (document: DocumentRecord) => {
+    if (document.status !== 'SIGNED' || !document.backendId) {
+      window.alert('Dokument można pobrać dopiero po podpisaniu.')
+      return
+    }
+
+    setDownloadingDocumentId(document.id)
+
+    try {
+      await downloadSignedCandidateDocument(document.backendId, `filled_${document.role}.pdf`)
+      setOpenActionMenuId(null)
+    } catch (error) {
+      console.error('Nie udało się pobrać dokumentu:', error)
+      window.alert('Nie udało się pobrać podpisanego dokumentu. Spróbuj ponownie za chwilę.')
+    } finally {
+      setDownloadingDocumentId(null)
+    }
   }
 
   return (
@@ -147,7 +259,33 @@ export function FunnelTable() {
           <h2>Lejek dokumentów</h2>
           <p>Śledź każdego kandydata od wysyłki do podpisu.</p>
         </div>
+        {centralCandidatesList.length > 0 && (
+          <button
+            className="panel-danger-button"
+            type="button"
+            disabled={isDeleting}
+            onClick={() => void deleteAllVisibleDocuments()}
+          >
+            <Trash2 />
+            Usuń wszystkich
+          </button>
+        )}
       </div>
+
+      {selectedCount > 0 && (
+        <div className="bulk-actions-bar">
+          <span>Zaznaczono: {selectedCount}</span>
+          <button
+            className="panel-danger-button"
+            type="button"
+            disabled={isDeleting}
+            onClick={() => void deleteSelectedDocuments()}
+          >
+            <Trash2 />
+            Usuń zaznaczonych
+          </button>
+        </div>
+      )}
 
       <div className="filters-row">
         <label>
@@ -166,12 +304,14 @@ export function FunnelTable() {
           <span>Typ umowy</span>
           <select
             value={contractTypeFilter}
-            onChange={(event) => setContractTypeFilter(event.target.value as DocumentRecord['contractType'] | 'ALL')}
+            onChange={(event) => setContractTypeFilter(event.target.value)}
           >
             <option value="ALL">Wszystkie</option>
-            <option value="B2B">B2B</option>
-            <option value="Umowa zlecenie">Umowa zlecenie</option>
-            <option value="Umowa o pracę">Umowa o pracę</option>
+            {contractTypeOptions.map((contractType) => (
+              <option key={contractType} value={contractType}>
+                {contractType}
+              </option>
+            ))}
           </select>
         </label>
       </div>
@@ -195,7 +335,19 @@ export function FunnelTable() {
           </tr>
         </thead>
         <tbody>
-          {visibleDocuments.map((document, rowIndex) => {
+          {visibleDocuments.length === 0 ? (
+            <EmptyState
+              variant="table"
+              colSpan={6}
+              message="Brak dostępnych dokumentów"
+              description={
+                centralCandidatesList.length === 0
+                  ? 'Dokumenty pojawią się po dodaniu kandydatów do lejka.'
+                  : 'Brak dokumentów pasujących do wybranych filtrów.'
+              }
+            />
+          ) : (
+            visibleDocuments.map((document, rowIndex) => {
             const shouldOpenMenuUp = rowIndex >= Math.max(visibleDocuments.length - 2, 0)
 
             return (
@@ -225,7 +377,7 @@ export function FunnelTable() {
               <td>
                 <div className="role-cell">
                   <p>{document.role}</p>
-                  <span>{document.company} • {document.contractType}</span>
+                  {document.company ? <span>{document.company}</span> : null}
                 </div>
               </td>
               <td>
@@ -279,15 +431,19 @@ export function FunnelTable() {
                       className={`table-actions-menu ${shouldOpenMenuUp ? 'table-actions-menu-up' : ''}`}
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <a href={`#dokument-${document.id}`}>
-                        <Upload />
-                        Pobierz dokument
-                      </a>
+                      <button
+                        type="button"
+                        disabled={downloadingDocumentId === document.id || document.status !== 'SIGNED'}
+                        onClick={() => void downloadDocument(document)}
+                      >
+                        <Download />
+                        {downloadingDocumentId === document.id ? 'Pobieranie...' : 'Pobierz dokument'}
+                      </button>
                       <a href={`sms:${document.candidateEmail}`}>
                         <Bell />
                         Wyślij przypomnienie SMS
                       </a>
-                      <button type="button" onClick={() => deleteDocument(document.id)}>
+                      <button type="button" disabled={isDeleting} onClick={() => void deleteDocument(document.id)}>
                         <Trash2 />
                         Usuń
                       </button>
@@ -297,7 +453,8 @@ export function FunnelTable() {
               </td>
             </tr>
             )
-          })}
+          })
+          )}
         </tbody>
       </table>
       <DocumentDrawer document={drawerDocument} onClose={() => setDrawerDocument(null)} />

@@ -3,7 +3,7 @@ import { ArrowLeft } from 'lucide-react'
 import { AuthModal } from '../components/AuthModal'
 import { Footer } from '../components/Footer'
 import { LandingNav } from '../components/LandingNav'
-import type { UserRole } from '../context/AppContext'
+import { useAppContext, type UserRole } from '../context/AppContext'
 import type { AppPage } from '../types'
 import { Offer } from './Offer'
 
@@ -12,6 +12,7 @@ interface PublicOfferPageProps {
 }
 
 export function PublicOfferPage({ onNavigate }: PublicOfferPageProps) {
+  const { isAuthenticated } = useAppContext()
   const [authModalOpen, setAuthModalOpen] = useState(false)
 
   useEffect(() => {
@@ -40,7 +41,7 @@ export function PublicOfferPage({ onNavigate }: PublicOfferPageProps) {
       <Footer />
 
       <AuthModal
-        isOpen={authModalOpen}
+        isOpen={authModalOpen && !isAuthenticated}
         onClose={() => setAuthModalOpen(false)}
         onAuthenticated={handleAuthenticated}
       />

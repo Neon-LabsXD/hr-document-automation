@@ -3,6 +3,7 @@ export type AppPage =
   | 'dashboard'
   | 'stats'
   | 'settings'
+  | 'pricing'
   | 'documents'
   | 'candidates'
   | 'offer'

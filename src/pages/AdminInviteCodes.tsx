@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Check, Copy, KeyRound, Trash2, X } from 'lucide-react'
+import { EmptyState } from '../components/EmptyState'
 import { Header } from '../components/Header'
 import { useAppContext } from '../context/AppContext'
 
@@ -63,7 +64,15 @@ export function AdminInviteCodes() {
             </tr>
           </thead>
           <tbody>
-            {inviteCodes.map((inviteCode) => {
+            {inviteCodes.length === 0 ? (
+              <EmptyState
+                variant="table"
+                colSpan={6}
+                message="Brak kodów zaproszeń"
+                description="Wygeneruj pierwszy kod, aby udostępnić dostęp nowej agencji."
+              />
+            ) : (
+              inviteCodes.map((inviteCode) => {
               const planName = inviteCode.plan || 'Start'
               const signatureLimit = inviteCode.signatureLimit || 20
 
@@ -103,7 +112,8 @@ export function AdminInviteCodes() {
                   </td>
                 </tr>
               )
-            })}
+            })
+            )}
           </tbody>
         </table>
       </section>

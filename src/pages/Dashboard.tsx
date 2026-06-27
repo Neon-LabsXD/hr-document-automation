@@ -1,4 +1,6 @@
+import { useEffect } from 'react'
 import { Clock3, FileText, Gauge, TrendingUp } from 'lucide-react'
+import { EmptyState } from '../components/EmptyState'
 import { FunnelTable } from '../components/FunnelTable'
 import { Header } from '../components/Header'
 import { MetricCard } from '../components/UI/MetricCard'
@@ -11,7 +13,27 @@ import {
 } from '../utils/candidateAnalytics'
 
 export function Dashboard() {
-  const { centralCandidatesList } = useAppContext()
+  const { centralCandidatesList, fetchCandidates, role } = useAppContext()
+
+  useEffect(() => {
+    if (role === 'guest') {
+      return
+    }
+
+    void fetchCandidates().catch((error) => {
+      console.error('Nie udało się pobrać kandydatów:', error)
+    })
+
+    const pollInterval = window.setInterval(() => {
+      void fetchCandidates().catch((error) => {
+        console.error('Nie udało się odświeżyć kandydatów:', error)
+      })
+    }, 20_000)
+
+    return () => {
+      window.clearInterval(pollInterval)
+    }
+  }, [fetchCandidates, role])
   const activeContracts = getActiveContractsCount(centralCandidatesList)
   const pendingCount = getPendingSignatureCount(centralCandidatesList)
   const conversionRate = getConversionRate(centralCandidatesList)
@@ -30,37 +52,37 @@ export function Dashboard() {
           label="Aktywne umowy"
           value={String(activeContracts)}
           description={isEmpty ? 'brak aktywnych umów' : 'wzrost aktywnych umów'}
-          delta={isEmpty ? '0%' : '+ 12,4%'}
+          delta="0%"
           icon={FileText}
         />
         <MetricCard
           label="Oczekujące na podpis"
           value={String(pendingCount)}
           description={isEmpty ? 'brak oczekujących dokumentów' : 'wysłano lub OTP'}
-          delta={isEmpty ? '0%' : '-8%'}
+          delta="0%"
           icon={Clock3}
         />
         <MetricCard
           label="Współczynnik konwersji"
           value={`${conversionRate}%`}
           description={isEmpty ? 'brak danych do analizy' : 'wysłano vs. podpisano'}
-          delta={isEmpty ? '0%' : '+ 4,3%'}
+          delta="0%"
           icon={TrendingUp}
         />
         <MetricCard
           label="Wskaźnik efektywności"
           value={averageSigningTime}
           description={isEmpty ? 'brak podpisanych umów' : 'czas do podpisu'}
-          delta={isEmpty ? '0 dni' : '+ 0,6 dnia'}
+          delta={isEmpty ? '0 dni' : averageSigningTime}
           icon={Gauge}
         />
       </section>
 
       {isEmpty ? (
-        <section className="dashboard-empty-state">
-          <h2>Brak aktywnych kandydatów</h2>
-          <p>Lejek dokumentów jest pusty. Wygeneruj link formularza lub dodaj pierwszego kandydata.</p>
-        </section>
+        <EmptyState
+          message="Brak aktywnych kandydatów"
+          description="Lejek dokumentów jest pusty. Wygeneruj link formularza lub dodaj pierwszego kandydata."
+        />
       ) : (
         <FunnelTable />
       )}

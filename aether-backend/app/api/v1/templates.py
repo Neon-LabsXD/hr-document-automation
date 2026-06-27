@@ -1,10 +1,13 @@
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
+
+logger = logging.getLogger("app.templates")
 
 from app.api.deps import get_current_user
 from app.core.database import supabase
@@ -18,6 +21,7 @@ from app.services.docuseal import (
 router = APIRouter()
 STORAGE_BUCKET = "agency-files"
 MAX_ORGANIZATION_TEMPLATES = 10
+MAX_TEMPLATE_PDF_BYTES = 10 * 1024 * 1024  # 10 MB
 REGISTRY_FILENAME = "_templates_registry.json"
 REGISTRY_META_KEY = "__meta__"
 DEFAULT_TEMPLATE_FILENAME_KEY = "default_template_filename"
@@ -39,6 +43,25 @@ def _safe_pdf_filename(filename: str) -> str:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Разрешены только файлы с расширением .pdf.",
+        )
+
+    # Защита от path traversal и скрытых файлов.
+    if (
+        safe_name.startswith(".")
+        or ".." in safe_name
+        or "\x00" in safe_name
+        or "/" in safe_name
+        or "\\" in safe_name
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Niedozwolona nazwa pliku.",
+        )
+
+    if len(safe_name) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nazwa pliku jest zbyt długa (maks. 200 znaków).",
         )
 
     return safe_name
@@ -106,9 +129,10 @@ def _get_organization_docuseal_template_id(organization_id: str) -> int | None:
             .execute()
         )
     except Exception as exc:
+        logger.exception("Failed to load docuseal_template_id for org %s.", organization_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось получить docuseal_template_id организации. Ошибка: {str(exc)}",
+            detail="Не удалось получить docuseal_template_id организации.",
         ) from exc
 
     docuseal_template_id = (organization_res.data or {}).get("docuseal_template_id")
@@ -175,9 +199,10 @@ def _save_template_registry(
             {"content-type": "application/json", "upsert": "true"},
         )
     except Exception as exc:
+        logger.exception("Failed to save template registry.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось сохранить реестр шаблонов. Ошибка: {str(exc)}",
+            detail="Не удалось сохранить реестр шаблонов.",
         ) from exc
 
 
@@ -251,9 +276,10 @@ def _list_storage_pdf_items(organization_id: str) -> list[dict[str, Any]]:
     try:
         storage_items = supabase.storage.from_(STORAGE_BUCKET).list(prefix)
     except Exception as exc:
+        logger.exception("Failed to list storage PDF items.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось получить список шаблонов. Ошибка: {str(exc)}",
+            detail="Не удалось получить список шаблонов.",
         ) from exc
 
     return sorted(
@@ -402,9 +428,10 @@ def _save_organization_docuseal_template_id(organization_id: str, docuseal_templ
             "docuseal_template_id": docuseal_template_id,
         }).eq("id", organization_id).execute()
     except Exception as exc:
+        logger.exception("Failed to save docuseal_template_id for org %s.", organization_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось сохранить docuseal_template_id в Supabase. Ошибка: {str(exc)}",
+            detail="Не удалось сохранить docuseal_template_id в Supabase.",
         ) from exc
 
 
@@ -526,9 +553,10 @@ async def delete_template(filename: str, current_user: CurrentUser = Depends(get
     try:
         supabase.storage.from_(STORAGE_BUCKET).remove([storage_path])
     except Exception as exc:
+        logger.exception("Failed to delete template %s for org %s.", safe_filename, organization_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось удалить шаблон. Ошибка: {str(exc)}",
+            detail="Не удалось удалить шаблон.",
         ) from exc
 
     _remove_template_registry_entry(organization_id, safe_filename)
@@ -547,12 +575,27 @@ async def upload_template(
     organization_id = str(current_user.organization_id)
     original_filename = file.filename or ""
     filename = _safe_pdf_filename(original_filename)
-    file_content = await file.read()
+
+    # Читаем не больше лимита, чтобы не дать атакующему выжать всю память.
+    file_content = await file.read(MAX_TEMPLATE_PDF_BYTES + 1)
 
     if not file_content:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Загруженный файл пуст.",
+        )
+
+    if len(file_content) > MAX_TEMPLATE_PDF_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Plik PDF jest zbyt duży. Maksymalny rozmiar to 10 MB.",
+        )
+
+    # Базовая проверка, что это действительно PDF: должна быть сигнатура %PDF-.
+    if not file_content.startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Plik nie jest poprawnym dokumentem PDF.",
         )
 
     existing_items = _list_storage_pdf_items(organization_id)
@@ -575,9 +618,10 @@ async def upload_template(
     except HTTPException:
         raise
     except httpx.HTTPError as exc:
+        logger.exception("DocuSeal connection failed in /templates/upload.")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Не удалось подключиться к DocuSeal API: {str(exc)}",
+            detail="Не удалось подключиться к DocuSeal API.",
         ) from exc
 
     docuseal_template_id = int(docuseal_template["id"])
@@ -605,9 +649,10 @@ async def upload_template(
             },
         )
     except Exception as exc:
+        logger.exception("Failed to upload template to Supabase Storage.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Не удалось загрузить шаблон в Supabase Storage. Ошибка: {str(exc)}",
+            detail="Не удалось загрузить шаблон в Supabase Storage.",
         ) from exc
 
     return {
