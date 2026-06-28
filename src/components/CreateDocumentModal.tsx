@@ -284,80 +284,82 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
 
         {step === 2 && (
           <div className="create-document-share-step">
-            <div className="create-link-success">
-              <strong>Przygotuj zaproszenie dla kandydata</strong>
-              <span>Po utworzeniu zaproszenia kandydat otrzyma publiczny formularz. DocuSeal uruchomi się dopiero po wysłaniu ankiety.</span>
-            </div>
-
-            {generatedLink && (
-              <div className="create-link-row">
-                <input readOnly value={generatedLink.url} aria-label="Wygenerowany link do formularza" />
-                <button className="create-copy-button" type="button" onClick={handleCopyLink}>
-                  {copied ? <Check /> : <Copy />}
-                  {copied ? 'Skopiowano' : 'Kopiuj link'}
-                </button>
+            <div className="create-document-share-body">
+              <div className="create-link-success">
+                <strong>Przygotuj zaproszenie dla kandydata</strong>
+                <span>Po utworzeniu zaproszenia kandydat otrzyma publiczny formularz. DocuSeal uruchomi się dopiero po wysłaniu ankiety.</span>
               </div>
-            )}
 
-            {generatedLink && (
-              <button className="create-open-form-button" type="button" onClick={handleOpenFormPreview}>
-                <ExternalLink />
-                Otwórz formularz (test)
+              {generatedLink && (
+                <div className="create-link-row">
+                  <input readOnly value={generatedLink.url} aria-label="Wygenerowany link do formularza" />
+                  <button className="create-copy-button" type="button" onClick={handleCopyLink}>
+                    {copied ? <Check /> : <Copy />}
+                    {copied ? 'Skopiowano' : 'Kopiuj link'}
+                  </button>
+                </div>
+              )}
+
+              {generatedLink && (
+                <button className="create-open-form-button" type="button" onClick={handleOpenFormPreview}>
+                  <ExternalLink />
+                  Otwórz formularz (test)
+                </button>
+              )}
+
+              <div className="create-link-divider">
+                <span>lub</span>
+              </div>
+
+              <div className="create-invite-grid">
+                <label>
+                  <span>Imię i nazwisko kandydata</span>
+                  <input
+                    value={inviteName}
+                    onChange={(event) => setInviteName(event.target.value)}
+                    placeholder="Jan Kowalski"
+                  />
+                </label>
+                <label>
+                  <span>E-mail kandydata</span>
+                  <input
+                    type="email"
+                    value={inviteEmail}
+                    onChange={(event) => setInviteEmail(event.target.value)}
+                    placeholder="kandydat@email.com"
+                  />
+                </label>
+                <label>
+                  <span>Telefon kandydata</span>
+                  <input
+                    value={invitePhone}
+                    onChange={(event) => setInvitePhone(event.target.value)}
+                    placeholder="+48 600 500 400"
+                  />
+                </label>
+              </div>
+
+              <button
+                className="create-invite-button"
+                type="button"
+                disabled={isSendingInvite || !inviteName.trim() || !inviteEmail.trim() || !invitePhone.trim()}
+                onClick={handleSendInvite}
+              >
+                <Send />
+                {isSendingInvite ? 'Wysyłanie...' : 'Wyślij zaproszenie'}
               </button>
-            )}
 
-            <div className="create-link-divider">
-              <span>lub</span>
+              {inviteError && <p className="auth-error">{inviteError}</p>}
+
+              {inviteSent && (
+                <p className="create-invite-feedback">
+                  <Smartphone />
+                  SMS z linkiem zostało wysłane!
+                </p>
+              )}
             </div>
 
-            <div className="create-invite-grid">
-              <label>
-                <span>Imię i nazwisko kandydata</span>
-                <input
-                  value={inviteName}
-                  onChange={(event) => setInviteName(event.target.value)}
-                  placeholder="Jan Kowalski"
-                />
-              </label>
-              <label>
-                <span>E-mail kandydata</span>
-                <input
-                  type="email"
-                  value={inviteEmail}
-                  onChange={(event) => setInviteEmail(event.target.value)}
-                  placeholder="kandydat@email.com"
-                />
-              </label>
-              <label>
-                <span>Telefon kandydata</span>
-                <input
-                  value={invitePhone}
-                  onChange={(event) => setInvitePhone(event.target.value)}
-                  placeholder="+48 600 500 400"
-                />
-              </label>
-            </div>
-
-            <button
-              className="create-invite-button"
-              type="button"
-              disabled={isSendingInvite || !inviteName.trim() || !inviteEmail.trim() || !invitePhone.trim()}
-              onClick={handleSendInvite}
-            >
-              <Send />
-              {isSendingInvite ? 'Wysyłanie...' : 'Wyślij zaproszenie'}
-            </button>
-
-            {inviteError && <p className="auth-error">{inviteError}</p>}
-
-            {inviteSent && (
-              <p className="create-invite-feedback">
-                <Smartphone />
-                SMS z linkiem zostało wysłane!
-              </p>
-            )}
-
-            <div className="create-document-actions create-document-actions-split">
+            <div className="create-document-actions create-document-actions-split create-document-share-footer">
               <button className="create-document-secondary" type="button" onClick={() => setStep(1)}>
                 <ArrowLeft />
                 Wstecz

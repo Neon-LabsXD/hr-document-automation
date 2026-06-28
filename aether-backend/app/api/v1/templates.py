@@ -422,6 +422,37 @@ def resolve_docuseal_template_id(organization_id: str, template_id: int | None) 
     )
 
 
+def resolve_template_hourly_rate(organization_id: str, template_id: int) -> str:
+    templates = list_organization_templates(organization_id)
+    template = next((item for item in templates if item["id"] == template_id), None)
+
+    if not template:
+        return ""
+
+    filename = template.get("filename")
+    if not filename:
+        return ""
+
+    registry_entry = _load_template_registry(organization_id).get(str(filename)) or {}
+    hourly_rate = registry_entry.get("hourly_rate")
+
+    if hourly_rate is None:
+        return ""
+
+    if isinstance(hourly_rate, bool):
+        return ""
+
+    if isinstance(hourly_rate, int):
+        return str(hourly_rate)
+
+    if isinstance(hourly_rate, float):
+        if hourly_rate.is_integer():
+            return str(int(hourly_rate))
+        return f"{hourly_rate:.2f}".rstrip("0").rstrip(".")
+
+    return str(hourly_rate).strip()
+
+
 def _save_organization_docuseal_template_id(organization_id: str, docuseal_template_id: int) -> None:
     try:
         supabase.table("organizations").update({

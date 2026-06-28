@@ -3234,8 +3234,12 @@ a {
 
 .create-document-modal {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: min(560px, 100%);
+  max-height: min(90vh, calc(100dvh - 48px));
   padding: 28px;
+  overflow: hidden;
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 24px;
@@ -3272,6 +3276,7 @@ a {
 }
 
 .create-document-heading {
+  flex-shrink: 0;
   padding-right: 42px;
 }
 
@@ -3310,6 +3315,7 @@ a {
 
 .create-document-progress {
   display: grid;
+  flex-shrink: 0;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin: 24px 0;
@@ -3407,7 +3413,11 @@ a {
 
 .create-document-template-step {
   display: grid;
+  flex: 1 1 auto;
   gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .create-template-grid {
@@ -3500,8 +3510,29 @@ a {
 }
 
 .create-document-share-step {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+}
+
+.create-document-share-body {
   display: grid;
+  flex: 1 1 auto;
   gap: 16px;
+  min-height: 0;
+  padding-bottom: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.create-document-share-footer {
+  flex-shrink: 0;
+  margin-top: 16px;
+  padding-top: 16px;
+  background: #fff;
+  border-top: 1px solid #e2e8f0;
 }
 
 .create-link-success {

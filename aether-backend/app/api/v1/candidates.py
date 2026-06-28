@@ -15,6 +15,7 @@ from app.api.deps import get_current_user
 from app.api.v1.templates import (
     list_organization_templates,
     resolve_docuseal_template_id,
+    resolve_template_hourly_rate,
     template_display_name,
 )
 from app.core.config import settings
@@ -35,13 +36,21 @@ router = APIRouter()
 OTP_CODE_TTL_SECONDS = 5 * 60          # код живёт 5 минут
 OTP_MAX_ATTEMPTS = 5                    # максимум 5 попыток ввода кода
 OTP_REQUEST_WINDOW_SECONDS = 60 * 60    # окно для rate-limit на отправку SMS
-OTP_REQUEST_LIMIT_PER_WINDOW = 3        # не более 3 SMS в час на кандидата
+OTP_REQUEST_LIMIT_PER_WINDOW = 100      # TODO: вернуть 3 после E2E-тестов OTP
 OTP_VERIFIED_TOKEN_TTL_SECONDS = 10 * 60  # токен подтверждения живёт 10 минут после ввода кода
+
+# Beta: заглушка OTP — без SMSAPI, фиксированный код для закрытого тестирования.
+# TODO: OTP_STUB_MODE = False перед продакшеном.
+OTP_STUB_MODE = True
+OTP_STUB_CODE = "123456"
 
 # Статусы, при которых разрешены повторные действия в публичных эндпоинтах.
 OTP_ALLOWED_STATUSES_FOR_REQUEST = {"invited", "otp_pending", "otp_verified"}
 OTP_ALLOWED_STATUSES_FOR_VERIFY = {"otp_pending", "otp_verified"}
 SUBMIT_ALLOWED_STATUSES = {"otp_verified"}
+
+# Имя поля в конструкторе DocuSeal — должно совпадать с name в шаблоне.
+DOCUSEAL_FIELD_HOURLY_RATE = "hourly_rate"
 
 
 class CreateCandidateRequest(BaseModel):
@@ -60,6 +69,7 @@ class CandidateFormSubmitRequest(BaseModel):
     phone: str = Field(min_length=1, max_length=32)
     pesel: str = Field(min_length=11, max_length=11, pattern=r"^\d{11}$")
     birth_date: str = Field(min_length=1, max_length=32)
+    hourly_rate: float = Field(gt=0, le=9999.99)
     street: str = Field(min_length=1, max_length=200)
     house_number: str = Field(min_length=1, max_length=32)
     postal_code: str = Field(min_length=1, max_length=16)
@@ -196,44 +206,50 @@ def _update_candidate(candidate_id: str, payload: dict[str, Any]) -> None:
 # endregion ---------------------------------------------------------------------
 
 
-def _load_agency_profile(organization_id: str, template_id: int | None = None) -> dict[str, Any]:
-    try:
-        organization_res = (
-            supabase.table("organizations")
-            .select("name, nip, address, phone")
-            .eq("id", organization_id)
-            .is_("deleted_at", "null")
-            .single()
-            .execute()
-        )
-    except Exception as exc:
-        logger.exception("Failed to load organization %s for candidate.", organization_id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Не удалось получить данные агентства.",
-        ) from exc
+def _format_hourly_rate(value: Any) -> str:
+    if value is None:
+        return ""
 
-    if not organization_res.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Организация кандидата не найдена.",
-        )
+    if isinstance(value, bool):
+        return ""
 
-    organization = organization_res.data
+    if isinstance(value, int):
+        return str(value)
 
-    return {
-        "docuseal_template_id": resolve_docuseal_template_id(organization_id, template_id),
-        "company_name": organization.get("name") or "",
-        "nip": organization.get("nip") or "",
-        "address": organization.get("address") or "",
-    }
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+
+    text = str(value).strip()
+    return text
+
+
+def _resolve_hourly_rate(organization_id: str, candidate: dict[str, Any]) -> str:
+    candidate_rate = candidate.get("hourly_rate")
+    if candidate_rate is not None and str(candidate_rate).strip():
+        return _format_hourly_rate(candidate_rate)
+
+    form_data = candidate.get("form_data")
+    if isinstance(form_data, dict):
+        form_rate = form_data.get("hourly_rate")
+        if form_rate is not None and str(form_rate).strip():
+            return _format_hourly_rate(form_rate)
+
+    template_id = candidate.get("template_id")
+    if template_id is not None:
+        template_rate = resolve_template_hourly_rate(organization_id, int(template_id))
+        if template_rate:
+            return template_rate
+
+    return ""
 
 
 def _build_docuseal_values(
     payload: CandidateFormSubmitRequest,
-    agency_profile: dict[str, Any],
+    hourly_rate: str,
 ) -> dict[str, str]:
-    return {
+    values = {
         "Full Name": f"{payload.first_name} {payload.last_name}".strip(),
         "PESEL": payload.pesel,
         "Email": str(payload.email),
@@ -243,25 +259,26 @@ def _build_docuseal_values(
             f"{payload.street} {payload.house_number}, "
             f"{payload.postal_code}, {payload.city}"
         ).strip(),
-        "Agency Name": agency_profile["company_name"],
-        "Agency NIP": agency_profile["nip"],
-        "Agency Address": agency_profile["address"],
+        DOCUSEAL_FIELD_HOURLY_RATE: str(hourly_rate),
     }
+
+    return values
 
 
 async def _create_docuseal_pdf_submission(
     payload: CandidateFormSubmitRequest,
-    agency_profile: dict[str, Any],
+    docuseal_template_id: int,
+    hourly_rate: str,
 ) -> str:
     docuseal_payload = {
-        "template_id": agency_profile["docuseal_template_id"],
+        "template_id": docuseal_template_id,
         "send_email": True,
         "submitters": [
             {
                 "role": "First Party",
                 "email": str(payload.email),
                 "name": f"{payload.first_name} {payload.last_name}".strip(),
-                "values": _build_docuseal_values(payload, agency_profile),
+                "values": _build_docuseal_values(payload, hourly_rate),
             }
         ],
     }
@@ -473,7 +490,11 @@ async def request_candidate_otp(slug: str, payload: RequestOtpRequest):
 
     _check_otp_rate_limit(candidate)
 
-    code = _generate_otp_code()
+    if OTP_STUB_MODE:
+        code = OTP_STUB_CODE
+    else:
+        code = _generate_otp_code()
+
     code_hash = _hash_otp_secret(code)
     now = _now_utc()
     expires_at = now + timedelta(seconds=OTP_CODE_TTL_SECONDS)
@@ -506,19 +527,31 @@ async def request_candidate_otp(slug: str, payload: RequestOtpRequest):
         },
     )
 
-    sms_message = (
-        f"Aether Flow: Twój kod weryfikacyjny to {code}. "
-        "Kod jest ważny przez 5 minut."
-    )
-
-    try:
-        await SmsService.send_raw_sms(candidate_phone, sms_message)
-    except Exception:
-        logger.exception("Failed to send OTP SMS to candidate %s.", candidate["id"])
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Nie udało się wysłać SMS-a z kodem weryfikacyjnym.",
+    if OTP_STUB_MODE:
+        print(
+            f"[OTP STUB] candidate={candidate['id']} "
+            f"phone={candidate_phone} code={code}",
+            flush=True,
         )
+        logger.info(
+            "OTP stub mode: skipping SMS, code=%s for candidate %s",
+            code,
+            candidate["id"],
+        )
+    else:
+        sms_message = (
+            f"Aether Flow: Twój kod weryfikacyjny to {code}. "
+            "Kod jest ważny przez 5 minut."
+        )
+
+        try:
+            await SmsService.send_raw_sms(candidate_phone, sms_message)
+        except Exception:
+            logger.exception("Failed to send OTP SMS to candidate %s.", candidate["id"])
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Nie udało się wysłać SMS-a z kodem weryfikacyjnym.",
+            )
 
     return {"status": "sent", "expires_in_seconds": OTP_CODE_TTL_SECONDS}
 
@@ -685,6 +718,7 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
         "phone": payload.phone,
         "pesel": payload.pesel,
         "birth_date": payload.birth_date,
+        "hourly_rate": payload.hourly_rate,
         "street": payload.street,
         "house_number": payload.house_number,
         "postal_code": payload.postal_code,
@@ -721,8 +755,31 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
     organization_id = str(candidate["organization_id"])
 
     try:
-        agency_profile = _load_agency_profile(organization_id, candidate.get("template_id"))
-        docuseal_id = await _create_docuseal_pdf_submission(payload, agency_profile)
+        docuseal_template_id = resolve_docuseal_template_id(
+            organization_id,
+            candidate.get("template_id"),
+        )
+        hourly_rate = _resolve_hourly_rate(
+            organization_id,
+            {**candidate, "hourly_rate": payload.hourly_rate},
+        )
+        if not hourly_rate:
+            logger.warning(
+                "DocuSeal prefill: hourly_rate is empty for candidate %s (template_id=%s)",
+                candidate["id"],
+                candidate.get("template_id"),
+            )
+        else:
+            logger.info(
+                "DocuSeal prefill: hourly_rate=%s for candidate %s",
+                hourly_rate,
+                candidate["id"],
+            )
+        docuseal_id = await _create_docuseal_pdf_submission(
+            payload,
+            docuseal_template_id,
+            hourly_rate,
+        )
     except HTTPException:
         _update_candidate(
             candidate["id"],

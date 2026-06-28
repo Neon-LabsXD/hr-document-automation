@@ -25,6 +25,7 @@ const initialFormData: CandidateFormInput = {
   phone: '',
   pesel: '',
   birthDate: '',
+  hourlyRate: '',
   street: '',
   houseNumber: '',
   postalCode: '',
@@ -180,6 +181,13 @@ export function CandidateForm() {
   const handleStartOtp = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setSubmitError('')
+
+    const parsedHourlyRate = Number.parseFloat(formData.hourlyRate.replace(',', '.'))
+    if (!Number.isFinite(parsedHourlyRate) || parsedHourlyRate <= 0) {
+      setSubmitError('Podaj prawidłową stawkę godzinową (np. 28.10).')
+      return
+    }
+
     setOtpStep('requesting')
     setOtpDigits(Array<string>(OTP_LENGTH).fill(''))
     verificationTokenRef.current = ''
@@ -288,6 +296,8 @@ export function CandidateForm() {
 
   const finalSubmit = useCallback(
     async (verificationToken: string) => {
+      const parsedHourlyRate = Number.parseFloat(formData.hourlyRate.replace(',', '.'))
+
       try {
         await submitCandidateForm(slug, {
           first_name: formData.firstName.trim(),
@@ -296,6 +306,7 @@ export function CandidateForm() {
           phone: formData.phone.trim(),
           pesel: formData.pesel.trim(),
           birth_date: formData.birthDate,
+          hourly_rate: parsedHourlyRate,
           street: formData.street.trim(),
           house_number: formData.houseNumber.trim(),
           postal_code: formData.postalCode.trim(),
@@ -437,6 +448,19 @@ export function CandidateForm() {
                 type="date"
                 value={formData.birthDate}
                 onChange={(event) => updateField('birthDate', event.target.value)}
+              />
+            </label>
+            <label className="candidate-form-span-2">
+              <span>Stawka godzinowa (zł)</span>
+              <input
+                required
+                type="number"
+                min="0.01"
+                step="0.01"
+                inputMode="decimal"
+                placeholder="np. 28.10"
+                value={formData.hourlyRate}
+                onChange={(event) => updateField('hourlyRate', event.target.value)}
               />
             </label>
           </div>

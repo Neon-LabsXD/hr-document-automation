@@ -91,8 +91,7 @@ def _release_invite_code(invite_id: str) -> None:
 async def register_tenant(payload: TenantRegistrationRequest):
     """
     Регистрация нового агентства по инвайт-коду.
-    Email НЕ подтверждается автоматически — пользователь обязан перейти
-    по ссылке из письма Supabase, прежде чем сможет войти.
+    Email подтверждается автоматически (бета): пользователь может войти сразу после регистрации.
     """
     claimed_invite = _claim_invite_code_atomically(payload.invite_code)
 
@@ -145,7 +144,7 @@ async def register_tenant(payload: TenantRegistrationRequest):
         create_user_payload = {
             "email": payload.email,
             "password": payload.password,
-            "email_confirm": False,
+            "email_confirm": True,
             "user_metadata": {
                 "full_name": payload.full_name,
             },
@@ -206,6 +205,6 @@ async def register_tenant(payload: TenantRegistrationRequest):
 
     return {
         "status": "success",
-        "message": "Организация успешно создана. Проверьте почту и подтвердите email.",
+        "message": "Организация успешно создана. Możesz się teraz zalogować.",
         "organization_id": organization_id,
     }

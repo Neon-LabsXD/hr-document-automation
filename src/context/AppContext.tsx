@@ -51,6 +51,7 @@ export interface CandidateFormInput {
   phone: string
   pesel: string
   birthDate: string
+  hourlyRate: string
   street: string
   houseNumber: string
   postalCode: string

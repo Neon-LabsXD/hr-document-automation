@@ -90,6 +90,7 @@ export interface CandidateFormSubmitPayload {
   phone: string
   pesel: string
   birth_date: string
+  hourly_rate: number
   street: string
   house_number: string
   postal_code: string

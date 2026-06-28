@@ -9,9 +9,7 @@ const DOCUSEAL_FIELD_VARIABLES = [
   { key: 'Phone', description: 'Telefon' },
   { key: 'Birth Date', description: 'Data urodzenia' },
   { key: 'Address', description: 'Ulica, numer domu, kod pocztowy, miasto' },
-  { key: 'Agency Name', description: 'Nazwa agencji' },
-  { key: 'Agency NIP', description: 'NIP agencji' },
-  { key: 'Agency Address', description: 'Adres agencji' },
+  { key: 'hourly_rate', description: 'Stawka godzinowa brutto' },
 ] as const
 
 interface TemplateBuilderModalProps {
