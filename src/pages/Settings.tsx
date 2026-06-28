@@ -81,12 +81,12 @@ export function Settings() {
   const [isLoadingProfile, setIsLoadingProfile] = useState(false)
   const [isSavingProfile, setIsSavingProfile] = useState(false)
   const [profileSaveStatus, setProfileSaveStatus] = useState('')
-  const [smtpForm, setSmtpForm] = useState({
+  const smtpForm = {
     host: '',
     port: '',
     senderEmail: '',
     appPassword: '',
-  })
+  }
   const [builderModal, setBuilderModal] = useState<{
     templateName: string
     builderToken: string | null

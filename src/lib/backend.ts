@@ -42,29 +42,29 @@ export interface TemplateListResponse {
 export const MAX_AGENCY_TEMPLATES = 10
 
 function normalizeAgencyTemplates(templates: RawAgencyTemplate[]): AgencyTemplate[] {
-  return templates
-    .map((template, index) => {
-      const filename = (template.filename || template.name || '').trim()
+  const data = templates.map((template, index) => {
+    const filename = (template.filename || template.name || '').trim()
 
-      if (!filename) {
-        return null
-      }
+    if (!filename) {
+      return null
+    }
 
-      const id = typeof template.id === 'number' && template.id > 0 ? template.id : index + 1
+    const id = typeof template.id === 'number' && template.id > 0 ? template.id : index + 1
 
-      return {
-        id,
-        name: (template.name || template.filename || filename).trim(),
-        filename,
-        path: template.path || '',
-        size: template.size ?? null,
-        updated_at: template.updated_at ?? null,
-        docuseal_template_id:
-          typeof template.docuseal_template_id === 'number' ? template.docuseal_template_id : null,
-        is_default_send: Boolean(template.is_default_send),
-      }
-    })
-    .filter((template): template is AgencyTemplate => template !== null)
+    return {
+      id,
+      name: (template.name || template.filename || filename).trim(),
+      filename,
+      path: template.path || '',
+      size: template.size ?? null,
+      updated_at: template.updated_at ?? null,
+      docuseal_template_id:
+        typeof template.docuseal_template_id === 'number' ? template.docuseal_template_id : null,
+      is_default_send: Boolean(template.is_default_send),
+    }
+  })
+
+  return (data || []).filter((item) => item !== null) as AgencyTemplate[]
 }
 
 export interface CreateCandidateInvitationPayload {
