@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # В production CORS НЕ включает localhost.
     ENVIRONMENT: Literal["development", "staging", "production"] = "development"
 
+    # Публичный URL фронтенда (ссылки в email/SMS для кандидатов).
+    FRONTEND_URL: str = "http://localhost:5173"
+
     # Настройки CORS (будут подтягиваться из .env)
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000"]
     
@@ -101,6 +104,7 @@ class Settings(BaseSettings):
         "DOCUSEAL_WEBHOOK_SECRET",
         "SMSAPI_OAUTH_TOKEN",
         "OTP_HMAC_SECRET",
+        "FRONTEND_URL",
         mode="before",
     )
     @classmethod
@@ -113,6 +117,11 @@ class Settings(BaseSettings):
     @classmethod
     def parse_allowed_origins(cls, value: object) -> list[str]:
         return parse_allowed_origins_value(value)
+
+    @field_validator("FRONTEND_URL", mode="after")
+    @classmethod
+    def normalize_frontend_url(cls, value: str) -> str:
+        return value.rstrip("/")
 
     # Автоматическое чтение из .env в корне aether-backend
     model_config = SettingsConfigDict(

@@ -1,7 +1,6 @@
 import hashlib
 import hmac
 import logging
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -106,8 +105,7 @@ def _candidate_form_url(slug: str) -> str:
 
 
 def _public_candidate_form_url(slug: str) -> str:
-    base_url = (os.getenv("PUBLIC_APP_URL") or "http://localhost:5173").rstrip("/")
-    return f"{base_url}{_candidate_form_url(slug)}"
+    return f"{settings.FRONTEND_URL}{_candidate_form_url(slug)}"
 
 
 # region OTP helpers -------------------------------------------------------------
