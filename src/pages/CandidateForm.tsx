@@ -12,8 +12,8 @@ import {
 import { CheckCircle2, FileUp, Loader2, ShieldCheck, Sparkles, UploadCloud, X } from 'lucide-react'
 import type { CandidateFormInput } from '../context/AppContext'
 import {
+  getCandidateFormPrefill,
   requestCandidateOtp,
-  scanPassport,
   submitCandidateForm,
   verifyCandidateOtp,
 } from '../lib/backend'
@@ -58,7 +58,6 @@ export function CandidateForm() {
   const [uploadedFiles, setUploadedFiles] = useState<string[]>([])
   const [submitted, setSubmitted] = useState(false)
   const [submitError, setSubmitError] = useState('')
-  const [isScanningPassport, setIsScanningPassport] = useState(false)
   const [ocrFeedback, setOcrFeedback] = useState('')
 
   const [otpStep, setOtpStep] = useState<OtpStep>('idle')
@@ -79,6 +78,47 @@ export function CandidateForm() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
+
+  useEffect(() => {
+    if (!slug) {
+      return
+    }
+
+    let ignore = false
+
+    async function loadPrefill() {
+      try {
+        const prefill = await getCandidateFormPrefill(slug)
+
+        if (ignore) {
+          return
+        }
+
+        setFormData((currentData) => ({
+          ...currentData,
+          firstName: prefill.first_name ?? currentData.firstName,
+          lastName: prefill.last_name ?? currentData.lastName,
+          email: prefill.email ?? currentData.email,
+          phone: prefill.phone ?? currentData.phone,
+          pesel: prefill.pesel ?? currentData.pesel,
+          birthDate: prefill.birth_date ?? currentData.birthDate,
+          hourlyRate: prefill.hourly_rate ?? currentData.hourlyRate,
+          street: prefill.street ?? currentData.street,
+          houseNumber: prefill.house_number ?? currentData.houseNumber,
+          postalCode: prefill.postal_code ?? currentData.postalCode,
+          city: prefill.city ?? currentData.city,
+        }))
+      } catch {
+        // Public form may not have saved data yet — candidate fills manually.
+      }
+    }
+
+    void loadPrefill()
+
+    return () => {
+      ignore = true
+    }
+  }, [slug])
 
   const isOtpModalOpen =
     otpStep === 'requesting' ||
@@ -134,32 +174,7 @@ export function CandidateForm() {
     const files = Array.from(event.target.files ?? [])
     setUploadedFiles((currentFiles) => [...currentFiles, ...files.map((file) => file.name)])
     event.target.value = ''
-
-    const passportImage = files.find((file) => file.type.startsWith('image/'))
-
-    if (!passportImage) {
-      return
-    }
-
-    setIsScanningPassport(true)
-    setOcrFeedback('Rozpoznawanie dokumentu...')
-
-    try {
-      const result = await scanPassport(passportImage)
-      const [firstName = '', ...lastNameParts] = (result.employee_name ?? '').split(' ').filter(Boolean)
-
-      setFormData((currentData) => ({
-        ...currentData,
-        firstName: firstName || currentData.firstName,
-        lastName: lastNameParts.join(' ') || currentData.lastName,
-        pesel: result.pesel ?? currentData.pesel,
-      }))
-      setOcrFeedback('Dane z dokumentu zostały rozpoznane i uzupełnione.')
-    } catch (error) {
-      setOcrFeedback(error instanceof Error ? error.message : 'Nie udało się rozpoznać dokumentu.')
-    } finally {
-      setIsScanningPassport(false)
-    }
+    setOcrFeedback('Plik został dodany. Uzupełnij dane ręcznie w formularzu.')
   }
 
   const requestNewOtp = useCallback(async (): Promise<boolean> => {
@@ -505,7 +520,7 @@ export function CandidateForm() {
           >
             <UploadCloud />
             <strong>Przeciągnij lub wybierz pliki</strong>
-            <span>{isScanningPassport ? 'OCR analizuje dokument...' : 'Oświadczenie, dowód osobisty, legitymacja itp.'}</span>
+            <span>Oświadczenie, dowód osobisty, legitymacja itp.</span>
             <small>Obsługiwane formaty: .docx, .pdf, .jpg, .png</small>
             <input
               ref={fileInputRef}

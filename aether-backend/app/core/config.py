@@ -78,8 +78,8 @@ class Settings(BaseSettings):
     SMTP_USER: EmailStr
     SMTP_PASSWORD: str  # Специальный пароль приложения (App Password)
     
-    # Конфигурация OpenAI
-    OPENAI_API_KEY: str
+    # Конфигурация OpenAI (legacy — OCR/LLM wyłączone, klucz opcjonalny)
+    OPENAI_API_KEY: str | None = None
 
     # Конфигурация DocuSeal
     DOCUSEAL_API_URL: str = "https://docuseal.eu/api"

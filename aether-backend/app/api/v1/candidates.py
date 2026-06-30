@@ -14,7 +14,6 @@ from app.api.deps import get_current_user
 from app.api.v1.templates import (
     list_organization_templates,
     resolve_docuseal_template_id,
-    resolve_template_hourly_rate,
     template_display_name,
 )
 from app.core.config import settings
@@ -24,6 +23,7 @@ from app.services.docuseal import (
     docuseal_api_url,
     docuseal_auth_headers,
     download_signed_submission_pdf,
+    extract_docuseal_submission_id,
 )
 from app.services.email_service import EmailService, EmailServiceError
 from app.services.sms_service import SmsService
@@ -206,79 +206,89 @@ def _update_candidate(candidate_id: str, payload: dict[str, Any]) -> None:
 # endregion ---------------------------------------------------------------------
 
 
-def _format_hourly_rate(value: Any) -> str:
-    if value is None:
-        return ""
-
-    if isinstance(value, bool):
-        return ""
-
-    if isinstance(value, int):
-        return str(value)
-
-    if isinstance(value, float):
-        if value.is_integer():
-            return str(int(value))
-        return f"{value:.2f}".rstrip("0").rstrip(".")
-
-    text = str(value).strip()
-    return text
-
-
-def _resolve_hourly_rate(organization_id: str, candidate: dict[str, Any]) -> str:
-    candidate_rate = candidate.get("hourly_rate")
-    if candidate_rate is not None and str(candidate_rate).strip():
-        return _format_hourly_rate(candidate_rate)
-
+def _hourly_rate_from_record(candidate: dict[str, Any]) -> str:
     form_data = candidate.get("form_data")
     if isinstance(form_data, dict):
-        form_rate = form_data.get("hourly_rate")
-        if form_rate is not None and str(form_rate).strip():
-            return _format_hourly_rate(form_rate)
+        raw_rate = form_data.get("hourly_rate")
+        if raw_rate is not None and str(raw_rate).strip():
+            rate_text = str(raw_rate).strip()
+            if "." in rate_text or "," in rate_text:
+                return rate_text.replace(",", ".")
+            return rate_text
 
-    template_id = candidate.get("template_id")
-    if template_id is not None:
-        template_rate = resolve_template_hourly_rate(organization_id, int(template_id))
-        if template_rate:
-            return template_rate
+    rate = candidate.get("hourly_rate")
+    if rate is None or not str(rate).strip():
+        return ""
 
-    return ""
+    if isinstance(rate, (int, float)):
+        numeric_rate = float(rate)
+        if numeric_rate.is_integer():
+            return str(int(numeric_rate))
+        return str(rate)
+
+    return str(rate).strip()
 
 
-def _build_docuseal_values(
-    payload: CandidateFormSubmitRequest,
-    hourly_rate: str,
-) -> dict[str, str]:
-    values = {
-        "Full Name": f"{payload.first_name} {payload.last_name}".strip(),
-        "PESEL": payload.pesel,
-        "Email": str(payload.email),
-        "Phone": payload.phone,
-        "Birth Date": payload.birth_date,
+def _build_docuseal_values_from_record(candidate: dict[str, Any]) -> dict[str, str]:
+    first_name = str(candidate.get("first_name") or "").strip()
+    last_name = str(candidate.get("last_name") or "").strip()
+    street = str(candidate.get("street") or "").strip()
+    house_number = str(candidate.get("house_number") or "").strip()
+    postal_code = str(candidate.get("postal_code") or "").strip()
+    city = str(candidate.get("city") or "").strip()
+
+    return {
+        "Full Name": f"{first_name} {last_name}".strip(),
+        "PESEL": str(candidate.get("pesel") or "").strip(),
+        "Email": str(candidate.get("email") or "").strip(),
+        "Phone": str(candidate.get("phone") or "").strip(),
+        "Birth Date": str(candidate.get("birth_date") or "").strip(),
         "Address": (
-            f"{payload.street} {payload.house_number}, "
-            f"{payload.postal_code}, {payload.city}"
-        ).strip(),
-        DOCUSEAL_FIELD_HOURLY_RATE: str(hourly_rate),
+            f"{street} {house_number}, {postal_code}, {city}"
+        ).strip().strip(",").strip(),
+        DOCUSEAL_FIELD_HOURLY_RATE: _hourly_rate_from_record(candidate),
     }
 
-    return values
+
+def _build_candidate_prefill_response(candidate: dict[str, Any]) -> dict[str, str | None]:
+    first_name = str(candidate.get("first_name") or "").strip()
+    last_name = str(candidate.get("last_name") or "").strip()
+    street = str(candidate.get("street") or "").strip()
+    house_number = str(candidate.get("house_number") or "").strip()
+    postal_code = str(candidate.get("postal_code") or "").strip()
+    city = str(candidate.get("city") or "").strip()
+
+    return {
+        "first_name": first_name or None,
+        "last_name": last_name or None,
+        "email": str(candidate.get("email") or "").strip() or None,
+        "phone": str(candidate.get("phone") or "").strip() or None,
+        "pesel": str(candidate.get("pesel") or "").strip() or None,
+        "birth_date": str(candidate.get("birth_date") or "").strip() or None,
+        "hourly_rate": _hourly_rate_from_record(candidate) or None,
+        "street": street or None,
+        "house_number": house_number or None,
+        "postal_code": postal_code or None,
+        "city": city or None,
+    }
 
 
 async def _create_docuseal_pdf_submission(
-    payload: CandidateFormSubmitRequest,
+    candidate: dict[str, Any],
     docuseal_template_id: int,
-    hourly_rate: str,
 ) -> str:
+    email = str(candidate.get("email") or "").strip()
+    first_name = str(candidate.get("first_name") or "").strip()
+    last_name = str(candidate.get("last_name") or "").strip()
     docuseal_payload = {
         "template_id": docuseal_template_id,
         "send_email": True,
         "submitters": [
             {
                 "role": "First Party",
-                "email": str(payload.email),
-                "name": f"{payload.first_name} {payload.last_name}".strip(),
-                "values": _build_docuseal_values(payload, hourly_rate),
+                "email": email,
+                "name": f"{first_name} {last_name}".strip(),
+                "values": _build_docuseal_values_from_record(candidate),
             }
         ],
     }
@@ -304,16 +314,13 @@ async def _create_docuseal_pdf_submission(
         )
 
     docuseal_data = response.json()
-    if isinstance(docuseal_data, dict) and "id" in docuseal_data:
-        return str(docuseal_data["id"])
-
-    if isinstance(docuseal_data, list) and docuseal_data and "id" in docuseal_data[0]:
-        return str(docuseal_data[0]["id"])
-
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail="DocuSeal вернул неожиданный формат ответа.",
+    submission_id = extract_docuseal_submission_id(docuseal_data)
+    logger.info(
+        "DocuSeal submission created: submission_id=%s (raw_type=%s)",
+        submission_id,
+        type(docuseal_data).__name__,
     )
+    return submission_id
 
 
 @router.post("")
@@ -467,6 +474,13 @@ async def download_signed_document(
 
 
 # region public candidate form ---------------------------------------------------
+
+
+@router.get("/{slug}/prefill")
+async def get_candidate_form_prefill(slug: str):
+    """Возвращает сохранённые в Supabase данные кандидата без LLM/OCR."""
+    candidate = _load_candidate_by_slug(slug)
+    return _build_candidate_prefill_response(candidate)
 
 
 @router.post("/{slug}/request-otp")
@@ -737,7 +751,14 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
         "house_number": payload.house_number,
         "postal_code": payload.postal_code,
         "city": payload.city,
-        "form_data": payload.model_dump(mode="json", exclude={"verification_token"}),
+        "form_data": {
+            **payload.model_dump(mode="json", exclude={"verification_token"}),
+            "hourly_rate": (
+                str(int(payload.hourly_rate))
+                if isinstance(payload.hourly_rate, float) and payload.hourly_rate.is_integer()
+                else str(payload.hourly_rate)
+            ),
+        },
         "submitted_at": submitted_at_iso,
         "status": "submitted",
     }
@@ -767,16 +788,14 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
 
     document = document_res.data[0]
     organization_id = str(candidate["organization_id"])
+    saved_candidate = {**candidate, **candidate_form_update}
 
     try:
         docuseal_template_id = resolve_docuseal_template_id(
             organization_id,
             candidate.get("template_id"),
         )
-        hourly_rate = _resolve_hourly_rate(
-            organization_id,
-            {**candidate, "hourly_rate": payload.hourly_rate},
-        )
+        hourly_rate = _hourly_rate_from_record(saved_candidate)
         if not hourly_rate:
             logger.warning(
                 "DocuSeal prefill: hourly_rate is empty for candidate %s (template_id=%s)",
@@ -790,9 +809,8 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
                 candidate["id"],
             )
         docuseal_id = await _create_docuseal_pdf_submission(
-            payload,
+            saved_candidate,
             docuseal_template_id,
-            hourly_rate,
         )
     except HTTPException:
         _update_candidate(

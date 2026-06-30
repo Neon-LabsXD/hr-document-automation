@@ -91,6 +91,42 @@ def create_builder_token(
     return token if isinstance(token, str) else token.decode("utf-8")
 
 
+def extract_docuseal_submission_id(docuseal_data: Any) -> str:
+    """
+    Из ответа POST /submissions извлекает ID сессии подписания (submission).
+
+    DocuSeal возвращает массив submitter-объектов, где:
+    - id            — ID подписанта (НЕ использовать для вебхуков)
+    - submission_id — ID сессии (совпадает с data.id в webhook submission.completed)
+    """
+    if isinstance(docuseal_data, list):
+        for item in docuseal_data:
+            if not isinstance(item, dict):
+                continue
+
+            submission_id = item.get("submission_id")
+            if submission_id is not None:
+                return str(submission_id)
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="DocuSeal nie zwrócił submission_id w odpowiedzi na utworzenie zgłoszenia.",
+        )
+
+    if isinstance(docuseal_data, dict):
+        submission_id = docuseal_data.get("submission_id")
+        if submission_id is not None:
+            return str(submission_id)
+
+        if docuseal_data.get("id") is not None:
+            return str(docuseal_data["id"])
+
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail="DocuSeal вернул неожиданный формат ответа.",
+    )
+
+
 def parse_docuseal_template_response(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or data.get("id") is None:
         raise HTTPException(

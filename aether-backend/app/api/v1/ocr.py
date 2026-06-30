@@ -1,156 +1,80 @@
-import base64
-import io
-import json
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from openai import OpenAI, OpenAIError
-from PIL import Image, UnidentifiedImageError
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from app.api.deps import get_current_user
-from app.core.config import settings
-from app.schemas.auth import CurrentUser
+from app.core.database import supabase
 
 logger = logging.getLogger("app.ocr")
 
 router = APIRouter()
 
-ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG"}
-MAX_PASSPORT_FILE_BYTES = 8 * 1024 * 1024  # 8 MB
 
-OCR_SYSTEM_PROMPT = (
-    "Ты — специализированный HR-модуль OCR для польского рынка. Твоя задача — извлечь "
-    "персональные данные из фотографии паспорта или Карты Побыту (Karta Pobytu). Вытащи "
-    "данные и верни СТРОГО JSON-объект со следующими ключами (если поле не найдено или "
-    "смазано, верни для него null):\n"
-    "- employee_name: Имя и Фамилия латиницей (как в документе).\n"
-    "- employee_passport: Серия и номер паспорта или номер карты побыту.\n"
-    "- employee_address: Адрес проживания / прописки (если указан). Если на карте побыту "
-    "адреса нет, оставь null.\n"
-    "- pesel: Номер PESEL (11 цифр), если он присутствует на документе.\n"
-    "Отвечай только валидным JSON-объектом, без разметки markdown и без лишнего текста."
-)
+def _load_candidate_by_slug(slug: str) -> dict:
+    candidate_res = (
+        supabase.table("candidates")
+        .select(
+            "first_name, last_name, email, phone, pesel, birth_date, "
+            "street, house_number, postal_code, city, hourly_rate, form_data"
+        )
+        .eq("slug", slug)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
 
-
-def _get_image_mime_type(filename: str) -> str:
-    extension = f".{filename.rsplit('.', 1)[-1].lower()}" if "." in filename else ""
-
-    if extension not in ALLOWED_IMAGE_EXTENSIONS:
+    if not candidate_res.data:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Разрешены только изображения .jpg, .jpeg или .png.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Formularz kandydata nie istnieje.",
         )
 
-    return "image/png" if extension == ".png" else "image/jpeg"
+    return candidate_res.data[0]
 
 
-def _validate_image_content(image_bytes: bytes) -> None:
-    """
-    Проверяем, что присланные байты — действительно изображение в одном из
-    разрешённых форматов. Без этой проверки клиент мог бы прислать любой
-    бинарный мусор с расширением .png и улететь в OpenAI на наши деньги.
-    """
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as image:
-            image.verify()
-            detected_format = (image.format or "").upper()
-    except (UnidentifiedImageError, Exception) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Файл не является валидным изображением.",
-        ) from exc
+def _build_passport_prefill_response(candidate: dict) -> dict[str, str | None]:
+    first_name = str(candidate.get("first_name") or "").strip()
+    last_name = str(candidate.get("last_name") or "").strip()
+    employee_name = f"{first_name} {last_name}".strip() or None
 
-    if detected_format not in ALLOWED_IMAGE_FORMATS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Разрешены только JPEG и PNG.",
-        )
+    street = str(candidate.get("street") or "").strip()
+    house_number = str(candidate.get("house_number") or "").strip()
+    postal_code = str(candidate.get("postal_code") or "").strip()
+    city = str(candidate.get("city") or "").strip()
+    address_parts = [part for part in [f"{street} {house_number}".strip(), postal_code, city] if part]
+    employee_address = ", ".join(address_parts) or None
+
+    pesel = str(candidate.get("pesel") or "").strip() or None
+
+    return {
+        "employee_name": employee_name,
+        "employee_passport": None,
+        "employee_address": employee_address,
+        "pesel": pesel,
+    }
 
 
 @router.post("/scan-passport")
 async def scan_passport(
-    file: UploadFile = File(...),
-    _current_user: CurrentUser = Depends(get_current_user),
+    slug: str = Form(...),
+    file: UploadFile | None = File(default=None),
 ):
-    filename = file.filename or ""
-    image_mime_type = _get_image_mime_type(filename)
-
-    if not settings.OPENAI_API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OPENAI_API_KEY не настроен на сервере.",
-        )
-
-    # Читаем НЕ более лимита, чтобы атакующий не смог выжрать память worker'а.
-    image_bytes = await file.read(MAX_PASSPORT_FILE_BYTES + 1)
-
-    if len(image_bytes) == 0:
+    """
+    OpenAI OCR removed — returns deterministic candidate data from Supabase.
+    Uploaded file is accepted for UX compatibility but not sent to any LLM.
+    """
+    slug_value = slug.strip()
+    if not slug_value:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Файл пуст.",
+            detail="Brak identyfikatora formularza (slug).",
         )
 
-    if len(image_bytes) > MAX_PASSPORT_FILE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Файл слишком большой. Максимум 8 МБ.",
+    if file is not None:
+        logger.info(
+            "scan-passport: file %s ignored (LLM OCR disabled), slug=%s",
+            file.filename,
+            slug_value,
         )
 
-    _validate_image_content(image_bytes)
-
-    try:
-        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
-
-        client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": OCR_SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Извлеки данные из этого документа и верни только JSON.",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{image_mime_type};base64,{encoded_image}",
-                            },
-                        },
-                    ],
-                },
-            ],
-        )
-
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("OpenAI вернул пустой ответ.")
-
-        return json.loads(content)
-    except OpenAIError as exc:
-        logger.exception("OpenAI OCR call failed.")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Ошибка при распознавании документа. Попробуйте ещё раз.",
-        ) from exc
-    except json.JSONDecodeError as exc:
-        logger.warning("OpenAI returned non-JSON response.")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="OpenAI вернул ответ, который не удалось разобрать как JSON.",
-        ) from exc
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Unexpected error during passport OCR.")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Не удалось распознать документ.",
-        )
+    candidate = _load_candidate_by_slug(slug_value)
+    return _build_passport_prefill_response(candidate)

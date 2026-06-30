@@ -59,7 +59,7 @@ app.include_router(organizations.router, prefix="/api/v1/organization", tags=["�
 app.include_router(candidates.router, prefix="/api/v1/candidates", tags=["Кандидаты"])
 app.include_router(templates.router, prefix="/api/v1/templates", tags=["Шаблоны документов"])
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["Генерация документов"])
-app.include_router(ocr.router, prefix="/api/v1/ocr", tags=["ИИ Распознавание (OCR)"])
+app.include_router(ocr.router, prefix="/api/v1/ocr", tags=["OCR (bez LLM)"])
 app.include_router(webhooks.router, prefix="/api/v1")
 
 

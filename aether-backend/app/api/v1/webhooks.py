@@ -96,15 +96,22 @@ def _find_candidate_by_submission_id(submission_id: str | None) -> dict[str, Any
 
     candidate_res = (
         supabase.table("candidates")
-        .select("id, organization_id, status")
+        .select("id, organization_id, status, docuseal_id")
         .eq("docuseal_id", submission_id)
         .is_("deleted_at", "null")
         .limit(1)
         .execute()
     )
 
-    if candidate_res.data:
-        return candidate_res.data[0]
+    candidate = candidate_res.data[0] if candidate_res.data else None
+    print(
+        f"=== DB CANDIDATE SEARCH RESULT ===: "
+        f"submission_id={submission_id!r}, rows={candidate_res.data}, candidate={candidate}",
+        flush=True,
+    )
+
+    if candidate:
+        return candidate
 
     return None
 
@@ -157,6 +164,10 @@ def _mark_contract_signed(
     candidate = _find_candidate_by_submission_id(submission_id)
 
     if not candidate:
+        print(
+            f"=== WARNING: Candidate with docuseal_id {submission_id} not found in DB ===",
+            flush=True,
+        )
         logger.warning(
             "DocuSeal webhook: candidate not found (submission_id=%s)",
             submission_id,
@@ -221,6 +232,8 @@ async def handle_docuseal_webhook(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
 
+    print(f"=== DOCUSEAL WEBHOOK PAYLOAD ===: {payload}", flush=True)
+
     event_type = payload.get("event_type") or payload.get("event")
     data = payload.get("data", {})
 
@@ -231,6 +244,10 @@ async def handle_docuseal_webhook(
 
     submission_id = _extract_submission_id(data)
     submission_status = _extract_submission_status(data)
+
+    print(f"=== EXTRACTED ID ===: {submission_id}", flush=True)
+    print(f"=== EXTRACTED STATUS ===: {submission_status}", flush=True)
+    print(f"=== EXTRACTED DATA KEYS ===: {list(data.keys())}", flush=True)
 
     if event_type in COMPLETED_SUBMISSION_EVENTS:
         return _mark_contract_signed(submission_id, submission_status)

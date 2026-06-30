@@ -117,6 +117,20 @@ export interface VerifyCandidateOtpResponse {
   expires_in_seconds: number
 }
 
+export interface CandidateFormPrefillResponse {
+  first_name?: string | null
+  last_name?: string | null
+  email?: string | null
+  phone?: string | null
+  pesel?: string | null
+  birth_date?: string | null
+  hourly_rate?: string | null
+  street?: string | null
+  house_number?: string | null
+  postal_code?: string | null
+  city?: string | null
+}
+
 export interface PassportScanResponse {
   employee_name?: string | null
   employee_passport?: string | null
@@ -312,13 +326,21 @@ export function verifyCandidateOtp(slug: string, code: string) {
   )
 }
 
-export function scanPassport(file: File) {
+export function getCandidateFormPrefill(slug: string) {
+  return apiRequest<CandidateFormPrefillResponse>(
+    `/api/v1/candidates/${encodeURIComponent(slug)}/prefill`,
+  )
+}
+
+export function scanPassport(slug: string, file?: File) {
   const formData = new FormData()
-  formData.append('file', file)
+  formData.append('slug', slug)
+  if (file) {
+    formData.append('file', file)
+  }
 
   return apiRequest<PassportScanResponse>('/api/v1/ocr/scan-passport', {
     method: 'POST',
-    auth: true,
     body: formData,
   })
 }

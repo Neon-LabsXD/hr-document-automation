@@ -14,7 +14,7 @@ from app.services.document_service import (
     PDF_MEDIA_TYPE,
     generate_tenant_document,
 )
-from app.services.docuseal import docuseal_api_url, docuseal_auth_headers
+from app.services.docuseal import docuseal_api_url, docuseal_auth_headers, extract_docuseal_submission_id
 
 logger = logging.getLogger("app.documents")
 
@@ -140,14 +140,11 @@ async def send_document(
             )
 
         docuseal_data = response.json()
-        if not isinstance(docuseal_data, list) or not docuseal_data or "id" not in docuseal_data[0]:
+        try:
+            docuseal_id = extract_docuseal_submission_id(docuseal_data)
+        except HTTPException:
             await _mark_document_as_error(str(document_id))
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="DocuSeal вернул неожиданный формат ответа.",
-            )
-
-        docuseal_id = docuseal_data[0]["id"]
+            raise
 
         supabase.table("documents").update({"docuseal_id": str(docuseal_id)}).eq(
             "id",
