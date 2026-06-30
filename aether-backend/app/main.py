@@ -13,22 +13,28 @@ LOCAL_DEV_ORIGINS = [
     "http://127.0.0.1:3000",
 ]
 
+PRODUCTION_ORIGINS = [
+    "https://app.aetherflow.pl",
+]
+
 
 def _resolve_cors_origins() -> list[str]:
     """
-    В production пускаем только явный whitelist из ALLOWED_ORIGINS.
+    В production пускаем whitelist из PRODUCTION_ORIGINS + ALLOWED_ORIGINS.
     В dev/staging добавляем стандартные локальные origin'ы для удобства.
     """
+    configured_origins = settings.ALLOWED_ORIGINS
+
     if settings.ENVIRONMENT == "production":
-        seed = list(settings.ALLOWED_ORIGINS)
+        seed = [*PRODUCTION_ORIGINS, *configured_origins]
     else:
-        seed = [*LOCAL_DEV_ORIGINS, *settings.ALLOWED_ORIGINS]
+        seed = [*LOCAL_DEV_ORIGINS, *configured_origins]
 
     return list(
         dict.fromkeys(
             origin.rstrip("/")
             for origin in seed
-            if origin and origin != "*"
+            if isinstance(origin, str) and origin.strip() and origin != "*"
         )
     )
 
@@ -44,8 +50,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Авторизация"])

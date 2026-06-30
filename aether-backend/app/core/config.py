@@ -1,10 +1,54 @@
 from pathlib import Path
 from typing import List, Literal
+import json
 
 from pydantic import EmailStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def parse_allowed_origins_value(value: object) -> list[str]:
+    """Нормализует ALLOWED_ORIGINS из env: строка, JSON-массив или список."""
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        origins: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                origins.extend(parse_allowed_origins_value(item))
+            elif item is not None:
+                normalized = str(item).strip().rstrip("/")
+                if normalized:
+                    origins.append(normalized)
+        return origins
+
+    if not isinstance(value, str):
+        return []
+
+    stripped = value.strip().strip('"').strip("'")
+    if not stripped:
+        return []
+
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+
+        if isinstance(parsed, list):
+            return [
+                str(item).strip().rstrip("/")
+                for item in parsed
+                if str(item).strip()
+            ]
+
+    return [
+        part.strip().rstrip("/")
+        for part in stripped.split(",")
+        if part.strip()
+    ]
 
 
 class Settings(BaseSettings):
@@ -64,6 +108,11 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return value.strip().strip('"').strip("'")
         return value
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, value: object) -> list[str]:
+        return parse_allowed_origins_value(value)
 
     # Автоматическое чтение из .env в корне aether-backend
     model_config = SettingsConfigDict(
