@@ -15,7 +15,6 @@ import {
 } from 'lucide-react'
 import { useAppContext } from '../context/AppContext'
 import type { AppPage } from '../types'
-import { getSignedCount } from '../utils/candidateAnalytics'
 
 interface NavigationItem {
   label: string
@@ -45,7 +44,7 @@ const superAdminNavigationItems: NavigationItem[] = [
 ]
 
 export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
-  const { centralCandidatesList, currentUserEmail, logout, organizationProfile, role } = useAppContext()
+  const { currentUserEmail, logout, organizationProfile, role } = useAppContext()
   const visibleNavigationItems = role === 'super_admin' ? superAdminNavigationItems : navigationItems
   const companyName =
     role === 'super_admin'
@@ -54,7 +53,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   const companySubtitle =
     role === 'super_admin' ? 'SUPER ADMIN' : organizationProfile?.nip?.trim() || '—'
   const signatureLimit = organizationProfile?.signatures_limit ?? 20
-  const usedSignatures = getSignedCount(centralCandidatesList)
+  const usedSignatures = organizationProfile?.signatures_used ?? 0
   const usagePercent = signatureLimit > 0 ? Math.min((usedSignatures / signatureLimit) * 100, 100) : 0
   const profileInitials = currentUserEmail
     ? currentUserEmail

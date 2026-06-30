@@ -70,8 +70,9 @@ function normalizeAgencyTemplates(templates: RawAgencyTemplate[]): AgencyTemplat
 export interface CreateCandidateInvitationPayload {
   template_id: number
   candidate_email: string
-  candidate_name: string
-  phone: string
+  // TODO: Modified for simplified email-only flow
+  candidate_name?: string | null
+  phone?: string | null
   require_id_scan: boolean
   require_student_status: boolean
 }
@@ -130,12 +131,14 @@ export interface OrganizationProfile {
   phone: string
   subscription_plan?: string
   signatures_limit?: number
+  signatures_used?: number
 }
 
 export interface OrganizationSubscription {
   plan_id: string
   plan_name: string
   signatures_limit: number
+  signatures_used?: number
 }
 
 export function getOrganizationProfile() {

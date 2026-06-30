@@ -13,7 +13,7 @@ router = APIRouter()
 
 PROFILE_FIELDS_BASE = "name, nip, address"
 PROFILE_FIELDS_WITH_PHONE = f"{PROFILE_FIELDS_BASE}, phone"
-SUBSCRIPTION_FIELDS = f"{PROFILE_FIELDS_BASE}, subscription_plan, signatures_limit"
+SUBSCRIPTION_FIELDS = f"{PROFILE_FIELDS_BASE}, subscription_plan, signatures_limit, signatures_used"
 SUBSCRIPTION_FIELDS_WITH_PHONE = f"{SUBSCRIPTION_FIELDS}, phone"
 _phone_column_available: bool | None = None
 _subscription_columns_available: bool | None = None
@@ -32,12 +32,14 @@ class OrganizationProfileResponse(BaseModel):
     phone: str
     subscription_plan: str = "Start (Testowy)"
     signatures_limit: int = 20
+    signatures_used: int = 0
 
 
 class OrganizationSubscriptionResponse(BaseModel):
     plan_id: str
     plan_name: str
     signatures_limit: int
+    signatures_used: int = 0
 
 
 class UpdateOrganizationProfileRequest(BaseModel):
@@ -72,7 +74,9 @@ def _organization_supports_subscription_fields() -> bool:
         return _subscription_columns_available
 
     try:
-        supabase.table("organizations").select("subscription_plan, signatures_limit").limit(1).execute()
+        supabase.table("organizations").select(
+            "subscription_plan, signatures_limit, signatures_used"
+        ).limit(1).execute()
         _subscription_columns_available = True
     except Exception:
         _subscription_columns_available = False
@@ -95,6 +99,7 @@ def _resolve_plan_id(plan_name: str | None) -> str:
 def _serialize_organization_profile(organization: dict) -> OrganizationProfileResponse:
     plan_name = str(organization.get("subscription_plan") or "Start (Testowy)")
     signatures_limit = organization.get("signatures_limit")
+    signatures_used = organization.get("signatures_used")
 
     return OrganizationProfileResponse(
         name=organization.get("name") or "",
@@ -103,6 +108,7 @@ def _serialize_organization_profile(organization: dict) -> OrganizationProfileRe
         phone=organization.get("phone") or "",
         subscription_plan=plan_name,
         signatures_limit=int(signatures_limit) if signatures_limit is not None else 20,
+        signatures_used=int(signatures_used) if signatures_used is not None else 0,
     )
 
 
@@ -216,6 +222,7 @@ async def get_organization_subscription(current_user: CurrentUser = Depends(get_
         plan_id=plan_id,
         plan_name=str(catalog_plan["name"]),
         signatures_limit=profile.signatures_limit,
+        signatures_used=profile.signatures_used,
     )
 
 
@@ -253,8 +260,12 @@ async def update_organization_subscription(
             detail="Nie udało się zaktualizować planu subskrypcji.",
         ) from exc
 
+    organization = _fetch_organization_profile(organization_id)
+    profile = _serialize_organization_profile(organization)
+
     return OrganizationSubscriptionResponse(
         plan_id=plan_id,
         plan_name=str(catalog_plan["name"]),
         signatures_limit=int(catalog_plan["signatures_limit"]),
+        signatures_used=profile.signatures_used,
     )

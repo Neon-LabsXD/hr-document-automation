@@ -26,6 +26,7 @@ from app.services.docuseal import (
     docuseal_auth_headers,
     download_signed_submission_pdf,
 )
+from app.services.email_service import EmailService, EmailServiceError
 from app.services.sms_service import SmsService
 
 logger = logging.getLogger("app.candidates")
@@ -55,8 +56,9 @@ DOCUSEAL_FIELD_HOURLY_RATE = "hourly_rate"
 
 class CreateCandidateRequest(BaseModel):
     candidate_email: EmailStr
-    candidate_name: str
-    phone: str = ""
+    # TODO: Modified for simplified email-only flow
+    candidate_name: str | None = None
+    phone: str | None = None
     template_id: int
     require_id_scan: bool = True
     require_student_status: bool = False
@@ -321,7 +323,10 @@ async def create_candidate_invitation(
     payload: CreateCandidateRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    first_name, last_name = _split_candidate_name(payload.candidate_name)
+    # TODO: Modified for simplified email-only flow
+    candidate_name = (payload.candidate_name or "").strip()
+    first_name, last_name = _split_candidate_name(candidate_name)
+    phone = (payload.phone or "").strip() or None
     slug = secrets.token_urlsafe(16)
 
     insert_res = (
@@ -332,7 +337,7 @@ async def create_candidate_invitation(
             "first_name": first_name,
             "last_name": last_name,
             "email": str(payload.candidate_email),
-            "phone": payload.phone.strip(),
+            "phone": phone,
             "slug": slug,
             "status": "invited",
             "template_id": payload.template_id,
@@ -351,8 +356,16 @@ async def create_candidate_invitation(
     candidate = insert_res.data[0]
     public_form_url = _public_candidate_form_url(slug)
 
-    if payload.phone.strip():
-        await SmsService.send_invitation_sms(payload.phone.strip(), public_form_url)
+    try:
+        await EmailService.send_invitation_email(str(payload.candidate_email), public_form_url)
+    except EmailServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Nie udało się wysłać zaproszenia e-mailem.",
+        ) from exc
+
+    if phone:
+        await SmsService.send_invitation_sms(phone, public_form_url)
 
     return {
         "id": candidate["id"],
@@ -474,19 +487,17 @@ async def request_candidate_otp(slug: str, payload: RequestOtpRequest):
         )
 
     candidate_phone = (candidate.get("phone") or "").strip()
-    submitted_phone = payload.phone.strip().replace(" ", "")
+    # TODO: REMOVE IN PRODUCTION (BETA BYPASS FOR EMAIL-ONLY FLOW)
+    skip_sms = not candidate_phone
 
-    if not candidate_phone:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Numer telefonu nie jest skonfigurowany dla tego kandydata.",
-        )
+    if not skip_sms:
+        submitted_phone = payload.phone.strip().replace(" ", "")
 
-    if candidate_phone.replace(" ", "") != submitted_phone:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Numer telefonu nie pasuje do zaproszenia.",
-        )
+        if candidate_phone.replace(" ", "") != submitted_phone:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Numer telefonu nie pasuje do zaproszenia.",
+            )
 
     _check_otp_rate_limit(candidate)
 
@@ -527,7 +538,12 @@ async def request_candidate_otp(slug: str, payload: RequestOtpRequest):
         },
     )
 
-    if OTP_STUB_MODE:
+    if skip_sms:
+        logger.info(
+            "OTP beta bypass: no phone on candidate %s, skipping SMS delivery",
+            candidate["id"],
+        )
+    elif OTP_STUB_MODE:
         print(
             f"[OTP STUB] candidate={candidate['id']} "
             f"phone={candidate_phone} code={code}",

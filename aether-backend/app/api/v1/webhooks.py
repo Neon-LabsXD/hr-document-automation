@@ -85,7 +85,7 @@ def _extract_submission_status(data: dict[str, Any]) -> str | None:
     return str(status_value).lower() if status_value is not None else None
 
 
-def _find_candidate_id(submission_id: str | None) -> str | None:
+def _find_candidate_by_submission_id(submission_id: str | None) -> dict[str, Any] | None:
     """
     Ищем кандидата ТОЛЬКО по docuseal submission_id. Email-fallback убран —
     он позволял cross-tenant IDOR (поддельный вебхук с email жертвы мог пометить
@@ -96,7 +96,7 @@ def _find_candidate_id(submission_id: str | None) -> str | None:
 
     candidate_res = (
         supabase.table("candidates")
-        .select("id")
+        .select("id, organization_id, status")
         .eq("docuseal_id", submission_id)
         .is_("deleted_at", "null")
         .limit(1)
@@ -104,27 +104,69 @@ def _find_candidate_id(submission_id: str | None) -> str | None:
     )
 
     if candidate_res.data:
-        return str(candidate_res.data[0]["id"])
+        return candidate_res.data[0]
 
     return None
+
+
+def _increment_organization_signatures_used(organization_id: str) -> int:
+    org_res = (
+        supabase.table("organizations")
+        .select("signatures_used, signatures_limit")
+        .eq("id", organization_id)
+        .is_("deleted_at", "null")
+        .single()
+        .execute()
+    )
+
+    if not org_res.data:
+        logger.warning(
+            "DocuSeal webhook: organization not found for signature accounting (organization_id=%s)",
+            organization_id,
+        )
+        return 0
+
+    organization = org_res.data
+    current_used = int(organization.get("signatures_used") or 0)
+    signatures_limit = int(organization.get("signatures_limit") or 0)
+    new_used = current_used + 1
+
+    supabase.table("organizations").update({
+        "signatures_used": new_used,
+    }).eq("id", organization_id).execute()
+
+    if signatures_limit > 0 and new_used > signatures_limit:
+        logger.warning(
+            "Organization %s exceeded signature limit: %s > %s",
+            organization_id,
+            new_used,
+            signatures_limit,
+        )
+
+    return new_used
 
 
 def _mark_contract_signed(
     submission_id: str | None,
     submission_status: str | None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     if submission_status and submission_status not in {"completed", "complete"}:
         return {"status": "ignored", "reason": "submission_not_completed"}
 
     current_time = datetime.now(timezone.utc).isoformat()
-    candidate_id = _find_candidate_id(submission_id)
+    candidate = _find_candidate_by_submission_id(submission_id)
 
-    if not candidate_id:
+    if not candidate:
         logger.warning(
             "DocuSeal webhook: candidate not found (submission_id=%s)",
             submission_id,
         )
         return {"status": "ignored", "reason": "candidate_not_found"}
+
+    candidate_id = str(candidate["id"])
+    organization_id = candidate.get("organization_id")
+    previous_status = str(candidate.get("status") or "").lower()
+    already_signed = previous_status == SIGNED_CANDIDATE_STATUS
 
     try:
         supabase.table("candidates").update({
@@ -138,15 +180,24 @@ def _mark_contract_signed(
                 "signed_at": current_time,
             }).eq("docuseal_id", submission_id).execute()
 
+        signatures_used: int | None = None
+        if organization_id and not already_signed:
+            signatures_used = _increment_organization_signatures_used(str(organization_id))
+
         logger.info(
-            "Contract signed: candidate_id=%s, submission_id=%s",
+            "Contract signed: candidate_id=%s, submission_id=%s, signatures_used=%s",
             candidate_id,
             submission_id,
+            signatures_used,
         )
     except Exception:
         logger.exception("Failed to update Supabase after DocuSeal webhook.")
+        return {"status": "error", "reason": "supabase_update_failed"}
 
-    return {"status": "processed", "candidate_id": candidate_id}
+    result: dict[str, Any] = {"status": "processed", "candidate_id": candidate_id}
+    if signatures_used is not None:
+        result["signatures_used"] = signatures_used
+    return result
 
 
 @router.post("/docuseal", status_code=status.HTTP_200_OK)
@@ -170,7 +221,7 @@ async def handle_docuseal_webhook(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
 
-    event_type = payload.get("event_type")
+    event_type = payload.get("event_type") or payload.get("event")
     data = payload.get("data", {})
 
     if not isinstance(data, dict):
@@ -178,10 +229,13 @@ async def handle_docuseal_webhook(
 
     logger.info("DocuSeal webhook (verified). event=%s", event_type)
 
+    submission_id = _extract_submission_id(data)
+    submission_status = _extract_submission_status(data)
+
     if event_type in COMPLETED_SUBMISSION_EVENTS:
-        return _mark_contract_signed(
-            _extract_submission_id(data),
-            _extract_submission_status(data),
-        )
+        return _mark_contract_signed(submission_id, submission_status)
+
+    if submission_status in {"completed", "complete"}:
+        return _mark_contract_signed(submission_id, submission_status)
 
     return {"status": "ignored", "event": event_type}

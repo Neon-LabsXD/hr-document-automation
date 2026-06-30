@@ -443,7 +443,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     setDocuments(mappedCandidates)
-  }, [currentUserEmail])
+
+    if (role === 'recruiter') {
+      try {
+        const profile = await getOrganizationProfile()
+        setOrganizationProfile(profile)
+      } catch (error) {
+        console.error('Nie udało się odświeżyć profilu agencji:', error)
+      }
+    }
+  }, [currentUserEmail, role])
 
   const deleteDocuments = useCallback(
     async (documentIds: number[]) => {

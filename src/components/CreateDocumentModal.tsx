@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, FileText, Send, Smartphone, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, Copy, ExternalLink, FileText, Mail, Send, X } from 'lucide-react'
 import { EmptyState } from './EmptyState'
 import { useAppContext, type FormLinkConfig } from '../context/AppContext'
 import { createCandidateInvitation, listTemplates, type AgencyTemplate } from '../lib/backend'
@@ -9,15 +9,8 @@ interface CreateDocumentModalProps {
   onClose: () => void
 }
 
-function normalizeCandidatePhone(phone: string) {
-  const trimmed = phone.trim()
-  const digitsOnly = trimmed.replace(/\D/g, '')
-
-  if (!trimmed.startsWith('+') && digitsOnly.length === 9) {
-    return `+48${digitsOnly}`
-  }
-
-  return trimmed
+function isValidCandidateEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
 }
 
 export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProps) {
@@ -29,9 +22,7 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false)
   const [templatesError, setTemplatesError] = useState('')
   const [generatedLink, setGeneratedLink] = useState<FormLinkConfig | null>(null)
-  const [inviteName, setInviteName] = useState('')
   const [inviteEmail, setInviteEmail] = useState('')
-  const [invitePhone, setInvitePhone] = useState('')
   const [copied, setCopied] = useState(false)
   const [inviteSent, setInviteSent] = useState(false)
   const [inviteError, setInviteError] = useState('')
@@ -101,9 +92,7 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
     setSelectedTemplateId(defaultTemplate?.id ?? null)
     setSelectedTemplateName(defaultTemplate?.name || defaultTemplate?.filename || '')
     setGeneratedLink(null)
-    setInviteName('')
     setInviteEmail('')
-    setInvitePhone('')
     setCopied(false)
     setInviteSent(false)
     setInviteError('')
@@ -159,8 +148,14 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
   }
 
   const handleSendInvite = async () => {
-    if (!inviteName.trim() || !inviteEmail.trim() || !invitePhone.trim()) {
-      setInviteError('Podaj imię, nazwisko, e-mail i telefon kandydata.')
+    // TODO: Modified for simplified email-only flow
+    if (!inviteEmail.trim()) {
+      setInviteError('Podaj e-mail kandydata.')
+      return
+    }
+
+    if (!isValidCandidateEmail(inviteEmail)) {
+      setInviteError('Podaj poprawny adres e-mail kandydata.')
       return
     }
 
@@ -175,13 +170,9 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
     }
 
     try {
-      const normalizedPhone = normalizeCandidatePhone(invitePhone)
-
       const invitation = await createCandidateInvitation({
         template_id: selectedTemplateId,
         candidate_email: inviteEmail.trim(),
-        candidate_name: inviteName.trim(),
-        phone: normalizedPhone,
         require_id_scan: false,
         require_student_status: false,
       })
@@ -313,28 +304,13 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
 
               <div className="create-invite-grid">
                 <label>
-                  <span>Imię i nazwisko kandydata</span>
-                  <input
-                    value={inviteName}
-                    onChange={(event) => setInviteName(event.target.value)}
-                    placeholder="Jan Kowalski"
-                  />
-                </label>
-                <label>
                   <span>E-mail kandydata</span>
                   <input
                     type="email"
+                    required
                     value={inviteEmail}
                     onChange={(event) => setInviteEmail(event.target.value)}
                     placeholder="kandydat@email.com"
-                  />
-                </label>
-                <label>
-                  <span>Telefon kandydata</span>
-                  <input
-                    value={invitePhone}
-                    onChange={(event) => setInvitePhone(event.target.value)}
-                    placeholder="+48 600 500 400"
                   />
                 </label>
               </div>
@@ -342,7 +318,7 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
               <button
                 className="create-invite-button"
                 type="button"
-                disabled={isSendingInvite || !inviteName.trim() || !inviteEmail.trim() || !invitePhone.trim()}
+                disabled={isSendingInvite || !inviteEmail.trim() || !isValidCandidateEmail(inviteEmail)}
                 onClick={handleSendInvite}
               >
                 <Send />
@@ -353,8 +329,8 @@ export function CreateDocumentModal({ isOpen, onClose }: CreateDocumentModalProp
 
               {inviteSent && (
                 <p className="create-invite-feedback">
-                  <Smartphone />
-                  SMS z linkiem zostało wysłane!
+                  <Mail />
+                  Zaproszenie z linkiem zostało wysłane na e-mail!
                 </p>
               )}
             </div>
