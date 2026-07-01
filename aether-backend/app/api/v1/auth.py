@@ -116,7 +116,8 @@ async def register_tenant(payload: TenantRegistrationRequest):
         )
 
     associated_plan = claimed_invite.get("associated_plan")
-    signatures_limit = 20 if associated_plan == "Biznes" else 50
+    plan_id = "biznes" if associated_plan == "Biznes" else "start"
+    signatures_limit = 200 if plan_id == "biznes" else 20
 
     organization_id: str | None = None
 

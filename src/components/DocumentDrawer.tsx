@@ -1,5 +1,6 @@
 import { CheckCircle2, MailCheck, Send, ShieldCheck, X, type LucideIcon } from 'lucide-react'
 import type { DocumentRecord, DocumentStatus } from '../context/AppContext'
+import { formatStatusTime } from '../utils/formatStatusTime'
 
 interface DocumentDrawerProps {
   document: DocumentRecord | null
@@ -9,39 +10,39 @@ interface DocumentDrawerProps {
 interface TimelineItem {
   label: string
   status: DocumentStatus
-  time: string
   description: string
   icon: LucideIcon
+  timestampKey: 'sentAt' | 'openedAt' | 'otpVerifiedAt' | 'signedAt'
 }
 
 const timelineItems: TimelineItem[] = [
   {
     label: 'Wysłano',
     status: 'SENT',
-    time: 'dziś, 09:12',
     description: 'Dokument został wysłany na adres e-mail kandydata.',
     icon: Send,
+    timestampKey: 'sentAt',
   },
   {
     label: 'Otwarto',
     status: 'OPENED',
-    time: 'dziś, 09:18',
     description: 'Kandydat otworzył bezpieczny link do dokumentu.',
     icon: MailCheck,
+    timestampKey: 'openedAt',
   },
   {
     label: 'Zweryfikowano OTP',
     status: 'OTP_VERIFIED',
-    time: 'dziś, 09:21',
     description: 'Tożsamość została potwierdzona jednorazowym kodem OTP.',
     icon: ShieldCheck,
+    timestampKey: 'otpVerifiedAt',
   },
   {
     label: 'Podpisano',
     status: 'SIGNED',
-    time: 'dziś, 09:24',
     description: 'Dokument został podpisany i zapisany w historii audytu.',
     icon: CheckCircle2,
+    timestampKey: 'signedAt',
   },
 ]
 
@@ -52,6 +53,11 @@ const statusOrder: Record<DocumentStatus, number> = {
   OPENED: 2,
   OTP_VERIFIED: 3,
   SIGNED: 4,
+}
+
+function getTimelineTime(document: DocumentRecord, item: TimelineItem): string {
+  const rawTimestamp = document[item.timestampKey]
+  return formatStatusTime(rawTimestamp)
 }
 
 export function DocumentDrawer({ document, onClose }: DocumentDrawerProps) {
@@ -82,6 +88,7 @@ export function DocumentDrawer({ document, onClose }: DocumentDrawerProps) {
               const Icon = item.icon
               const isPreFunnel = document.status === 'PENDING_GENERATION' || document.status === 'DATA_COMPLETED'
               const isReached = !isPreFunnel && statusOrder[item.status] <= statusOrder[document.status]
+              const formattedTime = getTimelineTime(document, item)
 
               return (
                 <article key={item.status} className={isReached ? 'timeline-item timeline-item-done' : 'timeline-item'}>
@@ -90,7 +97,7 @@ export function DocumentDrawer({ document, onClose }: DocumentDrawerProps) {
                   </div>
                   <main>
                     <strong>{item.label}</strong>
-                    <span>{isReached ? item.time : 'oczekuje'}</span>
+                    <span>{isReached ? formattedTime || '—' : 'oczekuje'}</span>
                     <p>{item.description}</p>
                   </main>
                 </article>

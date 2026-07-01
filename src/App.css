@@ -6192,6 +6192,21 @@ a {
   background: #e0f2fe;
 }
 
+.plan-badge-coming-soon {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.pricing-card-coming-soon {
+  opacity: 0.82;
+}
+
+.pricing-card-coming-soon button:disabled {
+  opacity: 1;
+  color: #64748b;
+  background: #e2e8f0;
+}
+
 .pricing-card button {
   width: 100%;
   height: 48px;

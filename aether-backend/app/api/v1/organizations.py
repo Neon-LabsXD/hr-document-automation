@@ -96,9 +96,40 @@ def _resolve_plan_id(plan_name: str | None) -> str:
     return "start"
 
 
+def _catalog_signatures_limit(plan_name: str | None) -> int:
+    plan_id = _resolve_plan_id(plan_name)
+    return int(PLAN_CATALOG[plan_id]["signatures_limit"])
+
+
+def _sync_signatures_limit_if_needed(organization_id: str, organization: dict) -> dict:
+    if not _organization_supports_subscription_fields():
+        return organization
+
+    expected_limit = _catalog_signatures_limit(organization.get("subscription_plan"))
+    current_limit = organization.get("signatures_limit")
+
+    if current_limit is not None and int(current_limit) == expected_limit:
+        return organization
+
+    try:
+        supabase.table("organizations").update({
+            "signatures_limit": expected_limit,
+        }).eq("id", organization_id).is_("deleted_at", "null").execute()
+        organization["signatures_limit"] = expected_limit
+    except Exception:
+        logger.warning(
+            "Failed to sync signatures_limit for organization %s to %s",
+            organization_id,
+            expected_limit,
+            exc_info=True,
+        )
+
+    return organization
+
+
 def _serialize_organization_profile(organization: dict) -> OrganizationProfileResponse:
     plan_name = str(organization.get("subscription_plan") or "Start (Testowy)")
-    signatures_limit = organization.get("signatures_limit")
+    signatures_limit = _catalog_signatures_limit(plan_name)
     signatures_used = organization.get("signatures_used")
 
     return OrganizationProfileResponse(
@@ -107,7 +138,7 @@ def _serialize_organization_profile(organization: dict) -> OrganizationProfileRe
         address=organization.get("address") or "",
         phone=organization.get("phone") or "",
         subscription_plan=plan_name,
-        signatures_limit=int(signatures_limit) if signatures_limit is not None else 20,
+        signatures_limit=signatures_limit,
         signatures_used=int(signatures_used) if signatures_used is not None else 0,
     )
 
@@ -137,7 +168,12 @@ def _fetch_organization_profile(organization_id: str) -> dict:
             detail="Организация не найдена.",
         )
 
-    return organization_res.data
+    organization = organization_res.data
+
+    if _organization_supports_subscription_fields():
+        organization = _sync_signatures_limit_if_needed(organization_id, organization)
+
+    return organization
 
 
 @router.get("/profile", response_model=OrganizationProfileResponse)
@@ -221,7 +257,7 @@ async def get_organization_subscription(current_user: CurrentUser = Depends(get_
     return OrganizationSubscriptionResponse(
         plan_id=plan_id,
         plan_name=str(catalog_plan["name"]),
-        signatures_limit=profile.signatures_limit,
+        signatures_limit=int(catalog_plan["signatures_limit"]),
         signatures_used=profile.signatures_used,
     )
 
@@ -238,6 +274,12 @@ async def update_organization_subscription(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Nieprawidłowy plan subskrypcji.",
+        )
+
+    if plan_id == "pro":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Plan Pro jest obecnie w realizacji i nie jest jeszcze dostępny.",
         )
 
     if not _organization_supports_subscription_fields():

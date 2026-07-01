@@ -14,6 +14,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useAppContext } from '../context/AppContext'
+import { getPricingPlanById, resolvePricingPlanId } from '../data/pricingPlans'
 import type { AppPage } from '../types'
 
 interface NavigationItem {
@@ -52,7 +53,9 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
       : organizationProfile?.name?.trim() || 'Twoja agencja'
   const companySubtitle =
     role === 'super_admin' ? 'SUPER ADMIN' : organizationProfile?.nip?.trim() || '—'
-  const signatureLimit = organizationProfile?.signatures_limit ?? 20
+  const signatureLimit =
+    organizationProfile?.signatures_limit ??
+    getPricingPlanById(resolvePricingPlanId(organizationProfile?.subscription_plan)).signatureLimit
   const usedSignatures = organizationProfile?.signatures_used ?? 0
   const usagePercent = signatureLimit > 0 ? Math.min((usedSignatures / signatureLimit) * 100, 100) : 0
   const profileInitials = currentUserEmail

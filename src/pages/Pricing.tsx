@@ -6,7 +6,7 @@ import { pricingPlans, type PricingPlanId } from '../data/pricingPlans'
 import { getOrganizationSubscription, updateOrganizationSubscription } from '../lib/backend'
 
 export function Pricing() {
-  const { fetchOrganizationProfile } = useAppContext()
+  const { fetchOrganizationProfile, patchOrganizationSubscription } = useAppContext()
   const [currentPlanId, setCurrentPlanId] = useState<PricingPlanId>('start')
   const [signaturesLimit, setSignaturesLimit] = useState(20)
   const [isLoading, setIsLoading] = useState(true)
@@ -45,7 +45,9 @@ export function Pricing() {
   }, [])
 
   const handleSelectPlan = async (planId: PricingPlanId) => {
-    if (planId === currentPlanId || updatingPlanId) {
+    const selectedPlan = pricingPlans.find((plan) => plan.id === planId)
+
+    if (!selectedPlan || selectedPlan.comingSoon || planId === currentPlanId || updatingPlanId) {
       return
     }
 
@@ -56,6 +58,7 @@ export function Pricing() {
       const subscription = await updateOrganizationSubscription(planId)
       setCurrentPlanId(subscription.plan_id as PricingPlanId)
       setSignaturesLimit(subscription.signatures_limit)
+      patchOrganizationSubscription(subscription.plan_name, subscription.signatures_limit)
       await fetchOrganizationProfile()
       setStatusMessage(`Aktywowano plan ${subscription.plan_name}.`)
     } catch (error) {
@@ -91,15 +94,18 @@ export function Pricing() {
             const isCurrentPlan = plan.id === currentPlanId
             const isUpdating = updatingPlanId === plan.id
 
+            const isUnavailable = Boolean(plan.comingSoon)
+
             return (
               <article
                 key={plan.id}
                 className={`pricing-card ${plan.highlighted ? 'pricing-card-featured' : ''} ${
                   isCurrentPlan ? 'pricing-card-current' : ''
-                }`}
+                } ${isUnavailable ? 'pricing-card-coming-soon' : ''}`}
               >
                 {plan.highlighted && <span className="plan-badge">Najczęściej wybierany</span>}
                 {isCurrentPlan && <span className="plan-badge plan-badge-current">Twój plan</span>}
+                {isUnavailable && <span className="plan-badge plan-badge-coming-soon">W realizacji</span>}
                 <h3>{plan.name}</h3>
                 <p>{plan.limit}</p>
                 <div className="flex flex-col gap-1">
@@ -107,7 +113,6 @@ export function Pricing() {
                     <span className="text-sm font-semibold text-gray-400/50 line-through">{plan.oldPrice}</span>
                   )}
                   <strong>{plan.price}</strong>
-                  {plan.priceNote && <span className="text-xs text-gray-400">{plan.priceNote}</span>}
                 </div>
                 <span className="plan-description">{plan.description}</span>
                 <ul>
@@ -120,10 +125,16 @@ export function Pricing() {
                 </ul>
                 <button
                   type="button"
-                  disabled={isCurrentPlan || isLoading || Boolean(updatingPlanId)}
+                  disabled={isCurrentPlan || isUnavailable || isLoading || Boolean(updatingPlanId)}
                   onClick={() => void handleSelectPlan(plan.id)}
                 >
-                  {isCurrentPlan ? 'Aktywny plan' : isUpdating ? 'Aktywowanie...' : plan.ctaLabel}
+                  {isCurrentPlan
+                    ? 'Aktywny plan'
+                    : isUnavailable
+                      ? plan.ctaLabel
+                      : isUpdating
+                        ? 'Aktywowanie...'
+                        : plan.ctaLabel}
                 </button>
               </article>
             )

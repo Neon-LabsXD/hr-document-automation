@@ -12,6 +12,10 @@ export interface BackendCandidate {
   invited_by?: string | null
   created_at?: string | null
   updated_at?: string | null
+  sent_at?: string | null
+  opened_at?: string | null
+  otp_verified_at?: string | null
+  signed_at?: string | null
 }
 
 const backendStatusToDocumentStatus: Record<string, DocumentStatus> = {
@@ -128,5 +132,9 @@ export function mapBackendCandidateToDocumentRecord(
     status: mapCandidateStatus(candidate.status),
     lastChange: formatLastChange(candidate.updated_at ?? candidate.created_at),
     recruiter: recruiterLabel,
+    sentAt: candidate.sent_at ?? null,
+    openedAt: candidate.opened_at ?? null,
+    otpVerifiedAt: candidate.otp_verified_at ?? null,
+    signedAt: candidate.signed_at ?? null,
   }
 }

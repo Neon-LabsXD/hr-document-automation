@@ -7,9 +7,9 @@ export interface PricingPlan {
   limit: string
   price: string
   oldPrice?: string
-  priceNote?: string
   description: string
   highlighted?: boolean
+  comingSoon?: boolean
   features: string[]
   ctaLabel: string
 }
@@ -32,7 +32,6 @@ export const pricingPlans: PricingPlan[] = [
     limit: 'do 200 podpisów / miesiąc',
     price: '199 PLN',
     oldPrice: '399 PLN',
-    priceNote: '*Cena gwarantowana na zawsze dla pierwszych klientów',
     description: 'Najlepszy wybór dla zespołów rekrutacyjnych z codziennym obiegiem dokumentów.',
     highlighted: true,
     features: ['Multi-tenancy dla agencji', 'Automatyczne przypomnienia', 'Priorytetowe wsparcie'],
@@ -46,8 +45,9 @@ export const pricingPlans: PricingPlan[] = [
     price: '499 PLN',
     oldPrice: '899 PLN',
     description: 'Dla większych agencji i zespołów, które potrzebują pełnej kontroli nad skalą.',
+    comingSoon: true,
     features: ['Limit 800 podpisów', 'Dedykowane środowisko', 'Zaawansowane SLA'],
-    ctaLabel: 'Wybierz plan',
+    ctaLabel: 'W realizacji',
   },
 ]
 

@@ -287,8 +287,14 @@ export function Landing({ onNavigate }: LandingProps) {
         </div>
         <div className="pricing-grid">
           {pricingPlans.map((plan) => (
-            <article key={plan.name} className={`pricing-card ${plan.highlighted ? 'pricing-card-featured' : ''}`}>
+            <article
+              key={plan.name}
+              className={`pricing-card ${plan.highlighted ? 'pricing-card-featured' : ''} ${
+                plan.comingSoon ? 'pricing-card-coming-soon' : ''
+              }`}
+            >
               {plan.highlighted && <span className="plan-badge">Najczęściej wybierany</span>}
+              {plan.comingSoon && <span className="plan-badge plan-badge-coming-soon">W realizacji</span>}
               <h3>{plan.name}</h3>
               <p>{plan.limit}</p>
               <div className="flex flex-col gap-1">
@@ -296,7 +302,6 @@ export function Landing({ onNavigate }: LandingProps) {
                   <span className="text-sm font-semibold text-gray-400/50 line-through">{plan.oldPrice}</span>
                 )}
                 <strong>{plan.price}</strong>
-                {plan.priceNote && <span className="text-xs text-gray-400">{plan.priceNote}</span>}
               </div>
               <span className="plan-description">{plan.description}</span>
               <ul>
@@ -307,7 +312,7 @@ export function Landing({ onNavigate }: LandingProps) {
                   </li>
                 ))}
               </ul>
-              <button type="button" onClick={handlePlanSelect}>
+              <button type="button" disabled={plan.comingSoon} onClick={() => !plan.comingSoon && handlePlanSelect()}>
                 {plan.ctaLabel}
               </button>
             </article>

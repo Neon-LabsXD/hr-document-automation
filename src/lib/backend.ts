@@ -299,10 +299,33 @@ export function createCandidateInvitation(payload: CreateCandidateInvitationPayl
   })
 }
 
-export function submitCandidateForm(slug: string, payload: CandidateFormSubmitPayload) {
+export function submitCandidateForm(
+  slug: string,
+  payload: CandidateFormSubmitPayload,
+  passportFile?: File,
+) {
+  const formData = new FormData()
+
+  formData.append('first_name', payload.first_name)
+  formData.append('last_name', payload.last_name)
+  formData.append('email', payload.email)
+  formData.append('phone', payload.phone)
+  formData.append('pesel', payload.pesel)
+  formData.append('birth_date', payload.birth_date)
+  formData.append('hourly_rate', String(payload.hourly_rate))
+  formData.append('street', payload.street)
+  formData.append('house_number', payload.house_number)
+  formData.append('postal_code', payload.postal_code)
+  formData.append('city', payload.city)
+  formData.append('verification_token', payload.verification_token)
+
+  if (passportFile) {
+    formData.append('passport_file', passportFile)
+  }
+
   return apiRequest<CandidateFormSubmitResponse>(`/api/v1/candidates/${encodeURIComponent(slug)}/submit`, {
     method: 'POST',
-    body: payload,
+    body: formData,
   })
 }
 

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr, Field
 
@@ -26,6 +26,7 @@ from app.services.docuseal import (
     extract_docuseal_submission_id,
 )
 from app.services.email_service import EmailService, EmailServiceError
+from app.services.candidate_passport_storage import store_candidate_passport_upload
 from app.services.sms_service import SmsService
 
 logger = logging.getLogger("app.candidates")
@@ -674,13 +675,42 @@ async def verify_candidate_otp(slug: str, payload: VerifyOtpRequest):
 
 
 @router.post("/{slug}/submit")
-async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
+async def submit_candidate_form(
+    slug: str,
+    first_name: str = Form(..., min_length=1, max_length=100),
+    last_name: str = Form(..., min_length=1, max_length=100),
+    email: EmailStr = Form(...),
+    phone: str = Form(..., min_length=1, max_length=32),
+    pesel: str = Form(..., min_length=11, max_length=11, pattern=r"^\d{11}$"),
+    birth_date: str = Form(..., min_length=1, max_length=32),
+    hourly_rate: float = Form(..., gt=0, le=9999.99),
+    street: str = Form(..., min_length=1, max_length=200),
+    house_number: str = Form(..., min_length=1, max_length=32),
+    postal_code: str = Form(..., min_length=1, max_length=16),
+    city: str = Form(..., min_length=1, max_length=120),
+    verification_token: str = Form(..., min_length=16, max_length=128),
+    passport_file: UploadFile | None = File(default=None),
+):
     """
     Публичный эндпоинт: отправка анкеты. Требует:
       1) валидный verification_token, выданный после прохождения OTP,
       2) статус кандидата = "otp_verified" (т.е. форма ещё не была отправлена).
     Повторный submit отдаёт 410 Gone.
     """
+    payload = CandidateFormSubmitRequest(
+        first_name=first_name,
+        last_name=last_name,
+        email=email,
+        phone=phone,
+        pesel=pesel,
+        birth_date=birth_date,
+        hourly_rate=hourly_rate,
+        street=street,
+        house_number=house_number,
+        postal_code=postal_code,
+        city=city,
+        verification_token=verification_token,
+    )
     candidate = _load_candidate_by_slug(slug)
     candidate_status = str(candidate.get("status") or "").lower()
 
@@ -711,6 +741,26 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Nieprawidłowy token weryfikacji.",
         )
+
+    requires_passport_scan = bool(candidate.get("require_id_scan", True))
+    has_passport_file = passport_file is not None and bool(passport_file.filename)
+
+    if requires_passport_scan and not has_passport_file:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wymagany skan dowodu osobistego lub dokumentu tożsamości.",
+        )
+
+    candidate_id = str(candidate["id"])
+    passport_path: str | None = None
+
+    if has_passport_file and passport_file is not None:
+        passport_path = await store_candidate_passport_upload(candidate_id, passport_file)
+        if not passport_path:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Nie udało się zapisać skanu dokumentu tożsamości.",
+            )
 
     candidate_name = f"{payload.first_name} {payload.last_name}".strip()
     document_title = f"Договор для {candidate_name}"
@@ -762,6 +812,9 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
         "submitted_at": submitted_at_iso,
         "status": "submitted",
     }
+    if passport_path:
+        candidate_form_update["passport_path"] = passport_path
+
     supabase.table("candidates").update(candidate_form_update).eq("id", candidate["id"]).execute()
 
     document_res = (
@@ -869,10 +922,48 @@ async def submit_candidate_form(slug: str, payload: CandidateFormSubmitRequest):
         "candidate_id": candidate["id"],
         "document_id": document["id"],
         "docuseal_id": docuseal_id,
+        "passport_path": passport_path,
     }
 
 
 # endregion ----------------------------------------------------------------------
+
+
+def _enrich_candidates_with_document_timestamps(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    document_ids = [
+        str(candidate["document_id"])
+        for candidate in candidates
+        if candidate.get("document_id")
+    ]
+
+    if not document_ids:
+        return candidates
+
+    documents_res = (
+        supabase.table("documents")
+        .select("id, sent_at, opened_at, otp_verified_at, signed_at")
+        .in_("id", list(dict.fromkeys(document_ids)))
+        .execute()
+    )
+    documents_by_id = {
+        str(document["id"]): document for document in (documents_res.data or [])
+    }
+
+    for candidate in candidates:
+        document_id = candidate.get("document_id")
+        if not document_id:
+            continue
+
+        document = documents_by_id.get(str(document_id))
+        if not document:
+            continue
+
+        candidate["sent_at"] = document.get("sent_at")
+        candidate["opened_at"] = document.get("opened_at")
+        candidate["otp_verified_at"] = document.get("otp_verified_at")
+        candidate["signed_at"] = document.get("signed_at")
+
+    return candidates
 
 
 def _enrich_candidates_with_templates(
@@ -939,4 +1030,5 @@ async def list_candidates(current_user: CurrentUser = Depends(get_current_user))
         result.data or [],
         str(current_user.organization_id),
     )
+    candidates = _enrich_candidates_with_document_timestamps(candidates)
     return {"candidates": candidates}

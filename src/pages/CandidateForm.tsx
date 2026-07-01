@@ -55,7 +55,7 @@ function buildSubmitErrorMessage(error: unknown, fallback: string): string {
 
 export function CandidateForm() {
   const [formData, setFormData] = useState<CandidateFormInput>(initialFormData)
-  const [uploadedFiles, setUploadedFiles] = useState<string[]>([])
+  const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
   const [submitted, setSubmitted] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [ocrFeedback, setOcrFeedback] = useState('')
@@ -172,7 +172,7 @@ export function CandidateForm() {
 
   const handleFilesSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? [])
-    setUploadedFiles((currentFiles) => [...currentFiles, ...files.map((file) => file.name)])
+    setUploadedFiles((currentFiles) => [...currentFiles, ...files])
     event.target.value = ''
     setOcrFeedback('Plik został dodany. Uzupełnij dane ręcznie w formularzu.')
   }
@@ -314,20 +314,24 @@ export function CandidateForm() {
       const parsedHourlyRate = Number.parseFloat(formData.hourlyRate.replace(',', '.'))
 
       try {
-        await submitCandidateForm(slug, {
-          first_name: formData.firstName.trim(),
-          last_name: formData.lastName.trim(),
-          email: formData.email.trim(),
-          phone: formData.phone.trim(),
-          pesel: formData.pesel.trim(),
-          birth_date: formData.birthDate,
-          hourly_rate: parsedHourlyRate,
-          street: formData.street.trim(),
-          house_number: formData.houseNumber.trim(),
-          postal_code: formData.postalCode.trim(),
-          city: formData.city.trim(),
-          verification_token: verificationToken,
-        })
+        await submitCandidateForm(
+          slug,
+          {
+            first_name: formData.firstName.trim(),
+            last_name: formData.lastName.trim(),
+            email: formData.email.trim(),
+            phone: formData.phone.trim(),
+            pesel: formData.pesel.trim(),
+            birth_date: formData.birthDate,
+            hourly_rate: parsedHourlyRate,
+            street: formData.street.trim(),
+            house_number: formData.houseNumber.trim(),
+            postal_code: formData.postalCode.trim(),
+            city: formData.city.trim(),
+            verification_token: verificationToken,
+          },
+          uploadedFiles[0],
+        )
         setSubmitted(true)
         setOtpStep('idle')
       } catch (error) {
@@ -340,7 +344,7 @@ export function CandidateForm() {
         setOtpStep('awaiting_code')
       }
     },
-    [formData, slug],
+    [formData, slug, uploadedFiles],
   )
 
   const handleVerifyOtp = async () => {
@@ -534,10 +538,10 @@ export function CandidateForm() {
 
           {uploadedFiles.length > 0 && (
             <ul className="candidate-upload-list">
-              {uploadedFiles.map((fileName) => (
-                <li key={fileName}>
+              {uploadedFiles.map((file) => (
+                <li key={`${file.name}-${file.lastModified}`}>
                   <FileUp />
-                  {fileName}
+                  {file.name}
                 </li>
               ))}
             </ul>

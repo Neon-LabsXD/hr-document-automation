@@ -31,6 +31,10 @@ export interface DocumentRecord {
   status: DocumentStatus
   lastChange: string
   recruiter: string
+  sentAt?: string | null
+  openedAt?: string | null
+  otpVerifiedAt?: string | null
+  signedAt?: string | null
   deleted?: boolean
 }
 
@@ -153,6 +157,7 @@ interface AppContextValue {
   updateFeatureProposalStatus: (proposalId: number, status: FeatureRequestStatus) => void
   fetchCandidates: () => Promise<void>
   fetchOrganizationProfile: () => Promise<void>
+  patchOrganizationSubscription: (planName: string, signaturesLimit: number) => void
 }
 
 const initialDocuments: DocumentRecord[] = []
@@ -490,6 +495,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const patchOrganizationSubscription = useCallback((planName: string, signaturesLimit: number) => {
+    setOrganizationProfile((currentProfile) =>
+      currentProfile
+        ? {
+            ...currentProfile,
+            subscription_plan: planName,
+            signatures_limit: signaturesLimit,
+          }
+        : currentProfile,
+    )
+  }, [])
+
   useEffect(() => {
     if (!authReady || role !== 'recruiter') {
       if (role !== 'recruiter') {
@@ -554,6 +571,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
       fetchCandidates,
       fetchOrganizationProfile,
+      patchOrganizationSubscription,
       addAgencyManually: (agency) => {
         const nextAgency: AgencyAccess = {
           ...agency,
@@ -698,6 +716,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       featureProposals,
       fetchCandidates,
       fetchOrganizationProfile,
+      patchOrganizationSubscription,
       inviteCodes,
       isAuthenticated,
       organizationProfile,
