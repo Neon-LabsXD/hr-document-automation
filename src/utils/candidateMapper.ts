@@ -16,6 +16,7 @@ export interface BackendCandidate {
   opened_at?: string | null
   otp_verified_at?: string | null
   signed_at?: string | null
+  passport_path?: string | null
 }
 
 const backendStatusToDocumentStatus: Record<string, DocumentStatus> = {
@@ -136,5 +137,6 @@ export function mapBackendCandidateToDocumentRecord(
     openedAt: candidate.opened_at ?? null,
     otpVerifiedAt: candidate.otp_verified_at ?? null,
     signedAt: candidate.signed_at ?? null,
+    passportPath: candidate.passport_path ?? null,
   }
 }

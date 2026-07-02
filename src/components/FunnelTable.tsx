@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bell, CheckCircle2, Download, MailCheck, MoreHorizontal, Send, ShieldCheck, Trash2, type LucideIcon } from 'lucide-react'
+import { Bell, CheckCircle2, Download, Eye, MailCheck, MoreHorizontal, Send, ShieldCheck, Trash2, type LucideIcon } from 'lucide-react'
 import { DocumentDrawer } from './DocumentDrawer'
 import { EmptyState } from './EmptyState'
 import { useAppContext, type DocumentRecord, type DocumentStatus } from '../context/AppContext'
-import { downloadSignedCandidateDocument } from '../lib/backend'
+import { downloadSignedCandidateDocument, getCandidatePassportUrl } from '../lib/backend'
 
 interface FunnelStage {
   label: string
@@ -79,6 +79,7 @@ export function FunnelTable() {
   const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [downloadingDocumentId, setDownloadingDocumentId] = useState<number | null>(null)
+  const [openingPassportDocumentId, setOpeningPassportDocumentId] = useState<number | null>(null)
   const contractTypeOptions = useMemo(
     () =>
       Array.from(
@@ -249,6 +250,25 @@ export function FunnelTable() {
       window.alert('Nie udało się pobrać podpisanego dokumentu. Spróbuj ponownie za chwilę.')
     } finally {
       setDownloadingDocumentId(null)
+    }
+  }
+
+  const openCandidateDocuments = async (document: DocumentRecord) => {
+    if (!document.backendId || !document.passportPath) {
+      return
+    }
+
+    setOpeningPassportDocumentId(document.id)
+
+    try {
+      const { url } = await getCandidatePassportUrl(document.backendId)
+      window.open(url, '_blank', 'noopener,noreferrer')
+      setOpenActionMenuId(null)
+    } catch (error) {
+      console.error('Nie udało się otworzyć dokumentów kandydata:', error)
+      window.alert('Nie udało się otworzyć dokumentów kandydata. Spróbuj ponownie za chwilę.')
+    } finally {
+      setOpeningPassportDocumentId(null)
     }
   }
 
@@ -438,6 +458,18 @@ export function FunnelTable() {
                       >
                         <Download />
                         {downloadingDocumentId === document.id ? 'Pobieranie...' : 'Pobierz dokument'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={
+                          !document.passportPath ||
+                          openingPassportDocumentId === document.id ||
+                          !document.backendId
+                        }
+                        onClick={() => void openCandidateDocuments(document)}
+                      >
+                        <Eye />
+                        {openingPassportDocumentId === document.id ? 'Otwieranie...' : 'Zobacz dokumenty'}
                       </button>
                       <a href={`sms:${document.candidateEmail}`}>
                         <Bell />

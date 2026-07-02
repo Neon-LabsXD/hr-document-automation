@@ -380,6 +380,20 @@ function triggerBrowserDownload(blob: Blob, filename: string) {
   URL.revokeObjectURL(objectUrl)
 }
 
+export interface CandidatePassportUrlResponse {
+  url: string
+  expires_in: number
+}
+
+export function getCandidatePassportUrl(candidateId: string) {
+  return apiRequest<CandidatePassportUrlResponse>(
+    `/api/v1/candidates/${encodeURIComponent(candidateId)}/passport-url`,
+    {
+      auth: true,
+    },
+  )
+}
+
 export async function downloadSignedCandidateDocument(candidateId: string, suggestedFilename?: string) {
   const blob = await apiRequest<Blob>(
     `/api/v1/candidates/${encodeURIComponent(candidateId)}/signed-document`,

@@ -56,6 +56,7 @@ function buildSubmitErrorMessage(error: unknown, fallback: string): string {
 export function CandidateForm() {
   const [formData, setFormData] = useState<CandidateFormInput>(initialFormData)
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
+  const [rodoConsent, setRodoConsent] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [ocrFeedback, setOcrFeedback] = useState('')
@@ -200,6 +201,11 @@ export function CandidateForm() {
     const parsedHourlyRate = Number.parseFloat(formData.hourlyRate.replace(',', '.'))
     if (!Number.isFinite(parsedHourlyRate) || parsedHourlyRate <= 0) {
       setSubmitError('Podaj prawidłową stawkę godzinową (np. 28.10).')
+      return
+    }
+
+    if (!rodoConsent) {
+      setSubmitError('Aby wysłać formularz, wyraź zgodę na przetwarzanie danych osobowych (RODO).')
       return
     }
 
@@ -551,7 +557,26 @@ export function CandidateForm() {
 
         {submitError && <p className="auth-error">{submitError}</p>}
 
-        <button className="candidate-form-submit" type="submit" disabled={isSubmitBusy}>
+        <label className="candidate-form-consent">
+          <input
+            type="checkbox"
+            required
+            checked={rodoConsent}
+            onChange={(event) => {
+              setRodoConsent(event.target.checked)
+              if (event.target.checked) {
+                setSubmitError('')
+              }
+            }}
+          />
+          <span>
+            Wyrażam zgodę na przetwarzanie moich danych osobowych zawartych w formularzu przez agencję
+            zatrudnienia w celu realizacji obecnego procesu rekrutacji oraz przyszłych zatrudnień, zgodnie z
+            ogólnym rozporządzeniem o ochronie danych (RODO) z dnia 27 kwietnia 2016 r.
+          </span>
+        </label>
+
+        <button className="candidate-form-submit" type="submit" disabled={isSubmitBusy || !rodoConsent}>
           {otpStep === 'requesting'
             ? 'Wysyłanie kodu SMS...'
             : otpStep === 'submitting'

@@ -11,6 +11,7 @@ logger = logging.getLogger("app.candidate_passport_storage")
 
 CANDIDATE_DOCUMENTS_BUCKET = "candidate-documents"
 PASSPORT_STORAGE_PREFIX = "passports"
+PASSPORT_SIGNED_URL_EXPIRES_IN = 900
 
 
 def _sanitize_filename(name: str) -> str:
@@ -97,3 +98,29 @@ async def store_candidate_passport_upload(
         file_name,
         upload_file.content_type,
     )
+
+
+def _extract_signed_url(response: object) -> str | None:
+    if isinstance(response, dict):
+        signed_url = response.get("signedURL") or response.get("signedUrl") or response.get("signed_url")
+        return str(signed_url) if signed_url else None
+
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        signed_url = data.get("signedURL") or data.get("signedUrl") or data.get("signed_url")
+        return str(signed_url) if signed_url else None
+
+    return None
+
+
+def create_passport_signed_url(passport_path: str) -> str:
+    response = supabase.storage.from_(CANDIDATE_DOCUMENTS_BUCKET).create_signed_url(
+        passport_path,
+        PASSPORT_SIGNED_URL_EXPIRES_IN,
+    )
+    signed_url = _extract_signed_url(response)
+
+    if not signed_url:
+        raise RuntimeError("Supabase did not return a signed URL for passport file.")
+
+    return signed_url

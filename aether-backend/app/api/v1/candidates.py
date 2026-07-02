@@ -26,7 +26,11 @@ from app.services.docuseal import (
     extract_docuseal_submission_id,
 )
 from app.services.email_service import EmailService, EmailServiceError
-from app.services.candidate_passport_storage import store_candidate_passport_upload
+from app.services.candidate_passport_storage import (
+    PASSPORT_SIGNED_URL_EXPIRES_IN,
+    create_passport_signed_url,
+    store_candidate_passport_upload,
+)
 from app.services.sms_service import SmsService
 
 logger = logging.getLogger("app.candidates")
@@ -472,6 +476,55 @@ async def download_signed_document(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/{candidate_id}/passport-url")
+async def get_candidate_passport_url(
+    candidate_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    candidate_res = (
+        supabase.table("candidates")
+        .select("id, passport_path")
+        .eq("id", candidate_id)
+        .eq("organization_id", str(current_user.organization_id))
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+
+    if not candidate_res.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Kandydat nie został znaleziony.",
+        )
+
+    candidate = candidate_res.data[0]
+    passport_path = str(candidate.get("passport_path") or "").strip()
+
+    if not passport_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Brak zapisanego skanu dokumentu tożsamości dla tego kandydata.",
+        )
+
+    try:
+        signed_url = create_passport_signed_url(passport_path)
+    except Exception as exc:
+        logger.exception(
+            "Failed to create signed passport URL for candidate_id=%s path=%s",
+            candidate_id,
+            passport_path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Nie udało się wygenerować linku do dokumentu kandydata.",
+        ) from exc
+
+    return {
+        "url": signed_url,
+        "expires_in": PASSPORT_SIGNED_URL_EXPIRES_IN,
+    }
 
 
 # region public candidate form ---------------------------------------------------

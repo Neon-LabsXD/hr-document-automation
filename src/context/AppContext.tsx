@@ -35,6 +35,7 @@ export interface DocumentRecord {
   openedAt?: string | null
   otpVerifiedAt?: string | null
   signedAt?: string | null
+  passportPath?: string | null
   deleted?: boolean
 }
 
