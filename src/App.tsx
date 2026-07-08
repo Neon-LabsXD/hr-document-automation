@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { CookieBanner } from './components/CookieBanner'
 import { Sidebar } from './components/Sidebar'
 import { AppProvider, useAppContext } from './context/AppContext'
 import { getInitialAppPage, pageToPath, pathToPage } from './lib/appRoutes'
@@ -124,6 +125,7 @@ function App() {
   return (
     <AppProvider>
       <AppContent />
+      <CookieBanner />
     </AppProvider>
   )
 }
